@@ -110,6 +110,7 @@ func_notification() {
 } ## Usage: func_echo_notification [level] [notification]
 func_environment_local() {
     [[ $# = 0 ]] && func_environment_local bash screen wget jre root sshd git basefolder subfolder
+    local TMP
     for TMP in $@; do
         case "$TMP" in
         bash)
@@ -231,6 +232,7 @@ func_multilayer_expand_menu() {
     printf "\e[1m$1\e[0m "
     ## Print content
     echo -e "\e[100m$2\e[0m"
+    return 0
 } ## Usage: func_multilayer_expand_menu [title] [content] [layer] [end] [no layer1] [no layer2] [...]
 func_yn() {
     local CHOICE=''
@@ -254,27 +256,72 @@ func_jar_config() {
     local CHANGE
     local OPTION
     local VALUE
-    for CHANGE in $@; do
-        IFS='=' read -r OPTION VALUE <<< "$COMMAND"
+    local IFS
+    while [[ $# > 0 ]]; do
+        local CHANGE="$1"
+        local IFS='='
+        read -r OPTION VALUE <<< "$CHANGE"
+        local IFS
         case "$OPTION" in
-            NAME|TAG|TYPE|VERSION|VERSION_MC|PROXY|BUILDTOOL)
-                eval JAR_$OPTION="$VALUE"
+            TAG|TYPE|VERSION|VERSION_MC)
+                eval JAR_$OPTION=\"$VALUE\"
                 func_notification 0 "Option '$OPTION' is changed to '$VALUE'"
+            ;;
+            PROXY|BUILDTOOL)
+                if [[ "$VALUE" = "0" ]]; then
+                    eval JAR_$OPTION=0
+                    func_notification 0 "Option '$OPTION' is changed to 0"
+                elif [[ "$VALUE" = "1" ]]; then
+                    eval JAR_$OPTION=1
+                    func_notification 1 "Option '$OPTION' is changed to 1"
+                else 
+                    func_notification 2 "Invalid value '$VALUE' for option '$OPTION', ignored. Accedpt: 0, 1"
+                fi
+            ;;
+            NAME)
+                if [[ -z "$JAR_NAME" ]]; then
+                    func_notification 2 "Renaming aborted due to no jar being selected"
+                elif [[ -f "$PATH_DIRECTORY/jar/$VALUE.jar" || -f "$PATH_DIRECTORY/jar/$VALUE.conf" ]]; then
+                    if [[ ! -w "$PATH_DIRECTORY/jar/$VALUE.jar" || ! -w "$PATH_DIRECTORY/jar/$VALUE.conf" ]]; then
+                        func_notification 2 "Renaming aborted. A jar with the same name '$VALUE' has already exist and can't be overwriten due to lack of writing permission. Check your permission."
+                    else
+                        func_yn N "A jar with the same name '$VALUE' has already exist, are you sure you want to overwrite it?"
+                        if [[ $? = 0 ]]; then
+                            mv -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" "$PATH_DIRECTORY/jar/$VALUE.jar"
+                            rm -f "$PATH_DIRECTORY/jar/$VALUE.conf" 1>/dev/null 2>&1
+                            mv -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" "$PATH_DIRECTORY/jar/$VALUE.conf" 1>/dev/null 2>&1
+                            JAR_NAME="$VALUE"
+                            func_notification 0 "Option NAME is changed to '$VALUE'"
+                        fi
+                    fi  
+                else
+                    mv "$PATH_DIRECTORY/jar/$JAR_NAME.jar" "$PATH_DIRECTORY/jar/$VALUE.jar"
+                    mv -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" "$PATH_DIRECTORY/jar/$VALUE.conf" 1>/dev/null 2>&1
+                    JAR_NAME="$VALUE"
+                    func_notification 0 "Option NAME is changed to '$VALUE'"
+                fi
+            ;;
             *)
-                func_notification 1 "Option '$OPTION' not exist or not changable, omitted"
+                func_notification 1 "Option '$OPTION' not exist or not available to change, ignored"
             ;;
         esac
+        shift
     done
-} ## Usage: func_jar_config [option1=value1] [option2=value2]
+    local IFS='='
+    return 0
+} ## Usage: func_jar_config [option1=value1]   [option2=value2]
 subfunc_jar_identify() {
-    echo "Auto-identifying jar information for $JAR_NAME..." 
+    echo "Auto-identifying jar information for JAR '$JAR_NAME'..." 
     if [[ ENV_JRE = 0 ]]; then
         func_notification 3 "Auto-identifying failed due to lacking of Java Runtime Environment " 
         return 1 # lacking of JRE
     else
-        local TMP="/tmp/M7CM-identifying-$JAR_NAME-`date +"%Y-%m-%d-%k:%M"`"
-        mkdir "$TMP" && pushd "$TMP"
-        JAR_VERSION=$(java -jar "$PATH_DIRECTORY/jar/$JAR_NAME.jar" --version)
+        local TMP="/tmp/M7CM-identifying-$JAR_NAME-`date +"%Y-%m-%d-%k-%M"`"
+        mkdir "$TMP"
+        func_notification 0 "Depending on the type of the jar, the performance of this host, and your network connection, it may take a few seconds or a few minutes to identify it. i.e. Paper pre-patch jar would download the vanilla jar and patch it"
+        pushd "$TMP" 1>/dev/null 2>&1
+        func_notification 1 "Switched to temporary folder '$TMP'"
+        JAR_VERSION=$(java -jar "$PATH_DIRECTORY/jar/$JAR_NAME.jar" --version) 1>/dev/null 2>&1
         local RETURN=$?
         if [[ $RETURN = 0 ]]; then
             if [[ "$JAR_VERSION" =~ "BungeeCord" ]]; then 
@@ -302,12 +349,15 @@ subfunc_jar_identify() {
                     if [[ $? != 0 ]]; then
                         func_notification 3 "The PaperMC pre-patch jar file should download a vanilla jar and patch it. But it seems it failed to patch the vanilla jar. Maybe you should check your network connection."
                         popd
+                        func_notification 1 "Got out from temporary folder '$TMP'"
                         rm -rf "$TMP"
                         return 2 ## paper patch error
                     else
                         func_environment_local subfolder-jar
-                        JAR_VERSION_MC=${BASENAME:8:-4} && mv -f "$TMP/cache/patched_*.jar" "$PATH_DIRECTORY/jar/$JAR_NAME.jar"
+                        JAR_VERSION_MC=${BASENAME:8:-4} 
                         JAR_VERSION="git${JAR_VERSION#*git}"
+                        local TARGET=`ls $TMP/cache/patched_*.jar |awk '{print $1}'`
+                        mv -f "$TARGET" "$PATH_DIRECTORY/jar/$JAR_NAME.jar"
                         func_notification 0 "Successfully patched paper and overwritten existing paper pre-patch jar with post-patch jar"
                     fi
                 else    
@@ -319,15 +369,15 @@ subfunc_jar_identify() {
                 JAR_BUILDTOOL=0
                 echo "We could not identify the jar's type, using version as its type"
             fi
-        else if [[ $RETURN = 1 ]]; then
+        elif [[ $RETURN = 1 ]]; then
             if [[ "$JAR_VERSION" =~ "BuildTools" ]]; then
                 echo "Looks like it contains Spigot BuildTools"
-                echo "Sweet! You can build a spigot jar using $PATH_SCRIPT jar build [jar] [version] $JAR_NAME!"
+                echo "Sweet! You can build a spigot jar using $PATH_SCRIPT jar build [jar] $JAR_NAME [version]!"
                 JAR_PROXY=0
                 JAR_BUILDTOOL=1
                 JAR_TYPE="Spigot Buildtools"
-                JAR_VERSION="From 1.8"
-                JAR_TAG="Sweet! You can build a spigot jar using $PATH_SCRIPT jar build [jar] [version] $JAR_NAME!"
+                JAR_VERSION_MC="From 1.8"
+                JAR_TAG="Sweet! You can build a spigot jar using '$PATH_SCRIPT jar build [jar] [version] $JAR_NAME!'"
             elif [[ "$JAR_VERSION" =~ "version is not a recognized option" ]]; then
                 echo "Looks like it contains a vannila server"
                 JAR_PROXY=0
@@ -339,6 +389,7 @@ subfunc_jar_identify() {
                 if [[ $? = 0 ]]; then
                     rm -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
                     popd
+                    func_notification 1 "Got out from temporary folder '$TMP'"
                     return 3 #corrupt jar and deleted
                 else
                     JAR_TAG=""
@@ -350,14 +401,15 @@ subfunc_jar_identify() {
                 fi
             fi
         fi
-        popd
+        popd 1>/dev/null 2>&1
+        func_notification 1 "Got out from temporary folder '$TMP'"
         rm -rf "$TMP"
         return 0
     fi
 } ## Identify the type of the jar file, need $JAR_NAME 
 subfunc_jar_info() {
     if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
-        func_notification 3 "Configuration file for jar '$JAR_NAME not exist, maybe you should run '$PATH_SCRIPT jar config $JAR_NAME' first"
+        func_notification 3 "Configuration file for jar '$JAR_NAME' does not exist, maybe you should run '$PATH_SCRIPT jar config $JAR_NAME' first"
         return 1 #config not exist
     else
         local JAR_SIZE=`wc -c $PATH_DIRECTORY/jar/$JAR_NAME.jar |awk '{print $1}'`
@@ -396,14 +448,16 @@ subfunc_jar_config_read() {
         JAR_SIZE=0
         return 1
     fi
-    IFS="="
+    local IFS="="
     while read -r NAME VALUE; do
         case "$NAME" in
-            JAR_TAG|JAR_PROXY|JAR_VERSION|JAR_VERSION_MC|JAR_BUILDTOOL)
+            JAR_TAG|JAR_TYPE|JAR_PROXY|JAR_VERSION|JAR_VERSION_MC|JAR_BUILDTOOL)
                 eval $NAME=$VALUE
             ;;
             *)
-                func_notification 1 "Redundant variable $NAME found in jar info file $JAR_NAME.info, ignored"
+                if [[ ! -z "$VALUE" ]]; then
+                    func_notification 1 "Redundant variable $NAME found in jar info file $JAR_NAME.info, ignored"
+                fi
             ;;
         esac
     done < $PATH_DIRECTORY/jar/$JAR_NAME.conf
@@ -414,7 +468,7 @@ subfunc_account_read() {
         func_notification 3 "Account file $ACCOUNT_NAME.account not found, use $PATH_SCRIPT account define $ACCOUNT_NAME to define it first."
         return 1
     fi
-    IFS="="
+    local IFS="="
     while read -r NAME VALUE; do
         case "$NAME" in
             ACCOUNT_HOST|ACCOUNT_PORT|ACCOUNT_USER|ACCOUNT_KEY)
@@ -440,7 +494,7 @@ subfunc_jar_name_fix() {
 } ## Fix jar name, cut out .jar extension
 func_ssh_validity() {
     printf "Testing keyfile..."
-    if [[ ! -f "$ACCOUNT_KEY" ]; then
+    if [[ ! -f "$ACCOUNT_KEY" ]]; then
         echo "failed"
         echo -e "\e[100m >>> Keyfile not exist\e[0m"
         return 1 # keyfile not exist
@@ -540,7 +594,6 @@ action_jar_import() {
         func_yn N "A jar with the same name $JAR_NAME has already been defined, you will overwrite this jar file. Are you sure you want to overwrite it?"
         if [[ $? = 1 ]]; then
             return 1 ## Aborted overwriting
-        fi
         elif [[ ! -w "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
             func_notification 3 "No permission to overwrite $JAR_NAM.jar, importing failed. check your permission"
             return 2 ## already exist and can not overwrite
@@ -548,23 +601,24 @@ action_jar_import() {
     fi
     if [[ -f "$2" ]]; then
         local TMP=`echo "${2: -4}" | tr [A-Z] [a-z]`
-        if [[ "$TMP" != ".jar" ]]; then
-            func_notification 1 "The file extension of this file is not .jar, maybe you've input a wrong file, but M7CM will try to import it anyway"
-        elif [[ ! -r "$2" ]]; then
+        if [[ ! -r "$2" ]]; then
             func_notification 3 "No read permission for file $2, importing failed. check your permission"
             return 3 ## No read permission for local file
+        elif [[ "$TMP" != ".jar" ]]; then
+            func_notification 1 "The file extension of this file is not .jar, maybe you've input a wrong file, but M7CM will try to import it anyway"
+        fi
+        func_notification 1 "Importing jar '$JAR_NAME' from local file '$2'"
+        \cp -f "$2" "$PATH_DIRECTORY/jar/$JAR_NAME.jar"
+        if [[ $? != 0 ]]; then
+            func_notification 3 "Failed to copy file $2, importing failed"
+            return 4 ## failed to copy. wtf is that reason?
         else
-            \cp -f "$PATH" "$PATH_DIRECTORY/jar/$JAR_NAME.jar"
-            if [[ $? != 0 ]]; then
-                func_notification 3 "Failed to copy file $2, importing failed"
-                return 4 ## failed to copy. wtf is that reason?
-            else
-                local JAR_TAG="Imported at `date +"%Y-%m-%d-%k:%M"` from local source $2"
-            fi
+            local JAR_TAG="Imported at `date +"%Y-%m-%d-%k:%M"` from local source $2"
         fi
     else
         local REGEX='(https?|ftp|file)://[-A-Za-z0-9\+&@#/%?=~_|!:,.;]*[-A-Za-z0-9\+&@#/%=~_|]'
-        if [[ "$LINK" =~ $REGEX ]]; then
+        if [[ "$2" =~ $REGEX ]]; then
+            func_notification 1 "Importing jar '$JAR_NAME' from url '$2'"
             wget -O "$PATH_DIRECTORY/jar/$JAR_NAME.jar" "$2"
             if [[ $? != 0 ]]; then
                 func_notification 3 "Failed to download file $2, importing failed. check your network connection"
@@ -577,13 +631,13 @@ action_jar_import() {
             return 6
         fi
     fi
-    func_notification 0 "Importing success! Proceeding to configure it in 3 seconds."
-    sleep 1
-    func_notification 0 "Importing success! Proceeding to configure it in 2 seconds.."
-    sleep 1
-    func_notification 0 "Importing success! Proceeding to configure it in 1 seconds..."
-    sleep 1
-    action_jar_config $JAR_NAME 1 "TAG=$JAR_TAG"
+    func_yn Y "Importing success! Do you want to auto-identify and configure it now?"
+    if [[ $? = 0 ]]; then
+        action_jar_config $JAR_NAME "TAG=$JAR_TAG"
+    else
+        func_notification 1 "Aborted configuring jar '$JAR_NAME', you may want to use '$PATH_SCRIPT jar config $JAR_NAME' to configure it later"
+    fi
+    return 0
 } ## Usage: action_jar_download [jar name] [link/path]
     ## return: 0 success, 1 abort overwriting, 2 already exist and can not overwrite, 3 no read permission for local source, 4 failed to copy, 5 failed to cownload, 6 invalid source
 action_jar_config() {
@@ -607,21 +661,23 @@ action_jar_config() {
     local JAR_BUILDTOOL=0
     if [[ -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
         if [[ ! -w "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
-            func_notification 3 "Strange things happended. Configuration file of jar '$JAR_NAME' is not writable now, thus we can not edit it."
+            func_notification 3 "Configuration file of jar '$JAR_NAME' is not writable now, thus we can not configure it."
             return 2 # existing configuration not writable
         elif [[ ! -r "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
-            func_notification 2 "What magic! We can not read existing configuration file for jar '$JAR_NAME', did you edited it as other users?"
+            func_notification 2 "We can not read existing configuration file for jar '$JAR_NAME', did you edited it as other users?"
             ## still proceed
         else
             subfunc_jar_config_read
         fi
     fi
-    if [[ ! -z "$3" ]]; then
-        func_jar_config ${@:3}
+    if [[ ! -z "$2" ]]; then
+        func_jar_config "${@:2}"
     fi
-    if [[ ! -z "$2" || ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
+    if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" && -z "$NO_IDENTIFY" ]]; then
         func_notification 1 "Looks like this jar is just added to our library or its configuration file has been lost, proceeding to auto-identify it"
         subfunc_jar_identify 
+        func_notification 0 "Refreshing in 1 second..."
+        sleep 1
     fi
     ## Get jar size
     local JAR_SIZE=`wc -c $PATH_DIRECTORY/jar/$JAR_NAME.jar |awk '{print $1}'`
@@ -648,9 +704,11 @@ action_jar_config() {
                 if [[ $? = 3 ]]; then
                     return 3 ## jar broken and deleted
                 fi
+                func_notification 0 "Refreshing in 1 second..."
+                sleep 1
             ;;
             confirm)
-                echo "Proceeding to write values to config file...."
+                func_notification 1 "Proceeding to write values to config file...."
                 echo "## Configuration for jar file '$JAR_NAME', DO NOT EDIT THIS UNLESS YOU KNOW WHAT YOU ARE DOING" > "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
                 echo "JAR_TAG=\"$JAR_TAG\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
                 echo "JAR_TYPE=\"$JAR_TYPE\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
@@ -658,52 +716,21 @@ action_jar_config() {
                 echo "JAR_PROXY=\"$JAR_PROXY\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
                 echo "JAR_VERSION=\"$JAR_VERSION\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
                 echo "JAR_VERSION_MC=\"$JAR_VERSION_MC\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
+                func_notification 0 "Successfully written values to config file $JAR_NAME.conf"
                 return 0 # success
             ;;
             *)
-                local OPTION=
-                local VALUE=
-                IFS='=' read -r OPTION VALUE <<< "$COMMAND"
-                case "$OPTION" in
-                    TAG|TYPE|VERSION|VERSION_MC)
-                        eval JAR_$OPTION="$VALUE"
-                    ;;
-                    PROXY|BUILDTOOL)
-                        if [[ "$OPTION" = "0" ]]; then
-                            eval JAR_$OPTION=0
-                        else
-                            eval JAR_$OPTION=1
-                        fi
-                    ;;
-                    NAME)
-                        if [[ -f "$PATH_DIRECTORY/jar/$VALUE.jar" ]]; then
-                            if [[ ! -w "$PATH_DIRECTORY/jar/$VALUE.jar" || ! -w "$PATH_DIRECTORY/jar/$VALUE.conf" ]]; then
-                                func_notification 2 "A jar with the same name '$VALUE' has already exist and can't be overwriten due to lack of writing permission. Check your permission."
-                            else
-                                func_yn N "A jar with the same name '$VALUE' has already exist, are you sure you want to overwrite it?"
-                                if [[ $? = 0 ]]; then
-                                    mv -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" "$PATH_DIRECTORY/jar/$VALUE.jar"
-                                    mv -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" "$PATH_DIRECTORY/jar/$VALUE.conf" 1>/dev/null 2>&1
-                                    JAR_NAME="$VALUE"
-                                fi
-                            fi  
-                        else
-                            mv "$PATH_DIRECTORY/jar/$JAR_NAME.jar" "$PATH_DIRECTORY/jar/$VALUE.jar"
-                            mv -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" "$PATH_DIRECTORY/jar/$VALUE.conf" 1>/dev/null 2>&1
-                            JAR_NAME="$VALUE"
-                        fi
-                    ;;
-                    *)
-                        func_notification 2 "Input not recognized."
-                        read -n 1 -s -r -p "Press any key to refresh..."
-                    ;;
-                esac
+                func_jar_config "$COMMAND"
+                # func_notification 0 "Refreshing in 3 second."
+                # sleep 1
+                # func_notification 0 "Refreshing in 2 second.."
+                # sleep 1
+                func_notification 0 "Refreshing in 1 second..."
+                sleep 1
             ;;
         esac
     done
-    fi
-    
-} ## Usage: action_jar_config [jar name] [auto-identify(any value)] [option1=value1] [option2=value2]
+} ## Usage: action_jar_config [jar name] [option1=value1] [option2=value2]
     ## return: 0 success, 1 not exist, 2 existing configuration not writable, 3 jar broken and deleted
 action_jar_info() {
     if [[ $# = 0 ]]; then
@@ -712,14 +739,29 @@ action_jar_info() {
         return 255 # Too few arguments
     fi
     func_environment_local subfolder-jar
-    local JAR_NAME="$1"
-    subfunc_jar_name_fix
-    if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
-        func_notification 3 "The jar file '$JAR_NAME' does not exist"
-        return 1 #invalid jar
+    if [[ $# = 1 ]]; then
+        local JAR_NAME="$1"
+        subfunc_jar_name_fix
+        if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
+            func_notification 3 "The jar file '$JAR_NAME' does not exist"
+            return 1 #invalid jar
+        else
+            func_multilayer_expand_menu "NAME: $JAR_NAME" "" 0
+            subfunc_jar_info
+        fi
     else
-        func_multilayer_expand_menu "<※> $JAR_NAME" "" 0
-        subfunc_jar_info
+        local ORDER=1
+        while [[ $# > 0 ]]; do
+            local JAR_NAME="$1"
+            subfunc_jar_name_fix
+            if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
+                func_notification 3 "The jar file '$JAR_NAME' does not exist"
+            else
+                func_multilayer_expand_menu "No.$ORDER $JAR_NAME" "" 0
+                subfunc_jar_info
+            fi
+            shift
+        done
     fi
     return 0
 } ## Usage: action_jar_info [jar name]
@@ -731,7 +773,7 @@ action_jar_list() {
     for JAR_NAME in $(ls $PATH_DIRECTORY/jar/*.jar); do
         JAR_NAME=$(basename $JAR_NAME)
         JAR_NAME=${JAR_NAME:0:-4}
-        func_multilayer_expand_menu "<$ORDER> $JAR_NAME" "" 0
+        func_multilayer_expand_menu "No.$ORDER $JAR_NAME" "" 0
         subfunc_jar_info
     done
     return 0
@@ -762,6 +804,9 @@ action_jar_remove() {
     fi
 } ## Usage: action_jar_remove [jar name]. return: 0 success, 1 not exist, 2 jar no writable, 3 conf not writable,
 action_jar_build() {
+    func_draw_line
+    func_print_center "Spigot Auto-Building Function"
+    func_draw_line
     if [[ $# -lt 2 ]]; then
         action_help
         func_notification 3 "Too few arguments!"
@@ -774,77 +819,100 @@ action_jar_build() {
     elif [[ ENV_GIT = 0 ]]; then
         func_notification 3 "Spigot build function is not available due to lacking of Git"
         return 2 #environment error-git
-    else
-        local JAR_NAME="$2"
-        if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
-            func_notification 3 "The buildtool you set does not exist"
-            return 3 #buildtool not exist
+    fi
+    local JAR_NAME="$2"
+    subfunc_jar_name_fix
+    if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
+        func_notification 3 "The buildtool you set does not exist"
+        return 3 #buildtool not exist
+    fi
+    local JAR_TAG=''
+    local JAR_TYPE=''
+    local JAR_VERSION=''
+    local JAR_VERSION_MC=''
+    local JAR_PROXY=0
+    local JAR_BUILDTOOL=0
+    subfunc_jar_config_read
+    if [[ $JAR_BUILDTOOL != 1 ]]; then
+        func_notification 3 "The buildtool you set was not set as a buildtool"
+        return 4 # not a buildtool
+    fi
+    local BUILDTOOL="$JAR_NAME"
+    JAR_NAME="$1"
+    subfunc_jar_name_fix
+    if [[ -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
+        if [[ ! -w "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
+            func_notification 3 "Another jar with the same name '$JAR_NAME' has existed, and can not be overwritten due to lacking of writing permission. Check your permission"
+            return 5 # can not overwrite existing jar
+
         else
-            local JAR_TAG=''
-            local JAR_TYPE=''
-            local JAR_VERSION=''
-            local JAR_VERSION_MC=''
-            local JAR_PROXY=0
-            local JAR_BUILDTOOL=0
-            subfunc_jar_name_fix
-            subfunc_jar_config_read
-            if [[ $JAR_BUILDTOOL != 1 ]]; then
-                func_notification 3 "The buildtool you set was not set as a buildtool"
-                return 4 # not a buildtool
-            else
-                local BUILDTOOL="$JAR_NAME"
-                JAR_NAME="$1"
-                if [[ -z "$3" || "$3" = "latest" ]]; then
-                    local VERSION="latest"
-                elif [[ "$3" =~ "1." ]]; then
-                    local VERSION2
-                    local VERSION3
-                    read -r VERSION2 VERSION3 <<< "$COMMAND"
-                    if [[ "$VERSION2" -ge 8 && "$VERSION3" -le 8 ]]; then
-                        local VERSION="$3"
-                    else
-                        func_yn N "The version '$3' seems not a correct version, do you want to proceed anyway?"
-                        if [[ $? = 1 ]]; then
-                            local VERSION="$3"
-                        else
-                            return 5 # user aborted because of suspicious version
-                        fi
-                    fi
-                else
-                    func_yn N "The version '$3' seems not a correct version, do you want to proceed anyway?"
-                    if [[ $? = 1 ]]; then
-                        local VERSION="$3"
-                    else
-                        return 5 # user aborted because of suspicious version
-                    fi
-                fi
-                local TMP="/tmp/M7CM-build-$JAR_NAME-`date +"%Y-%m-%d-%k:%M"`"
-                mkdir "$TMP" && pushd "$TMP"
-                java -jar "$PATH_DIRECTORY/jar/$BUILDTOOL.jar" --rev $VERSION
-                if [[ $? != 0 ]]; then
-                    func_notification 3 "Failed to build Spigot version $BUILD_VERSION"
-                    popd
-                    rm -rf "$TMP"
-                    return 6 #build error
-                else
-                    local OUTPUT=`ls spigot-*.jar | awk '{print $1}'`
-                    cp "$OUTPUT" "$PATH_DIRECTORY/jar/$JAR_NAME.jar"
-                    popd
-                    rm -rf "$TMP"
-                    func_notification 0 "Building success! Proceeding to configure it in 3 seconds."
-                    sleep 1
-                    func_notification 0 "Building success! Proceeding to configure it in 2 seconds.."
-                    sleep 1
-                    func_notification 0 "Building success! Proceeding to configure it in 1 seconds..."
-                    sleep 1
-                    action_jar_config $JAR_NAME "" "TAG=Built at `date +"%Y-%m-%d-%k:%M"` using M7CM" "TYPE=Spigot" "PROXY=0" "VERSION=Spigot-$VERSION" "VERSION_MC=$VERSION" "BUILDTOOL=0"
-                    return 0
-                fi
+            func_yn N "Another jar with the same name '$JAR_NAME' has existed, would you like to overwrite it?"
+            if [[ $? = 1 ]]; then
+                return 6 # user aborted overwriting
             fi
         fi
     fi
+    if [[ -z "$3" || "$3" = "latest" ]]; then
+        local VERSION="latest"
+    elif [[ "${3:0:2}" = "1." ]]; then
+        local VERSION2
+        local VERSION3
+        local IFS='.'
+        read -r VERSION2 VERSION3 <<< "${3:2}"
+        local IFS
+        if [[ "$VERSION2" -ge 8 && "$VERSION3" -le 8 ]]; then
+            local VERSION="$3"
+        else
+            func_yn N "The version '$3' seems not a correct version, do you want to proceed anyway?"
+            if [[ $? = 0 ]]; then
+                local VERSION="$3"
+            else
+                return 7 # user aborted because of suspicious version
+            fi
+        fi
+    else
+        func_yn N "The version '$3' seems not a correct version, do you want to proceed anyway?"
+        if [[ $? = 1 ]]; then
+            local VERSION="$3"
+        else
+            return 7 # user aborted because of suspicious version
+        fi
+    fi
+    local TMP="/tmp/M7CM-Spigot-building-$JAR_NAME-`date +"%Y-%m-%d-%k-%M"`"
+    mkdir "$TMP" 1>/dev/null 2>&1
+    pushd "$TMP" 1>/dev/null 2>&1
+    func_notification 1 "Switched to temporary folder '$TMP'"
+    func_notification 1 "Using build command: java -jar $PATH_DIRECTORY/jar/$BUILDTOOL.jar --rev $VERSION"
+    func_notification 1 "Building Spigot jar '$JAR_NAME' rev '$VERSION' using Buildtools jar '$BUILDTOOL'. This may take a few minutes depending on your network connection and hardware performance"
+    java -jar "$PATH_DIRECTORY/jar/$BUILDTOOL.jar" --rev "$VERSION"
+    if [[ $? != 0 ]]; then
+        func_notification 3 "Failed to build Spigot version $BUILD_VERSION"
+        popd 1>/dev/null 2>&1
+        func_notification 1 "Got out from temporary folder '$TMP'"
+        rm -rf "$TMP"
+        return 8 #build error
+    else
+        local OUTPUT=`ls spigot-*.jar | awk '{print $1}'`
+        cp "$OUTPUT" "$PATH_DIRECTORY/jar/$JAR_NAME.jar"
+        if [[ $? != 0 ]]; then
+            func_notification "Failed to get compiled jar '$JAR_NAME', building failed"
+            return 9 #build failed
+        fi
+        popd 1>/dev/null 2>&1
+        func_notification 1 "Got out from temporary folder '$TMP'"
+        rm -rf "$TMP"
+        func_notification 1 "Successfully built Spigot jar '$JAR_NAME' rev '$VERSION' using Buildtools jar '$BUILDTOOL'! It's already added in your jar library."
+        func_yn Y "Would you like to configure it now?"
+        if [[ $? = 0 ]]; then
+            local NO_IDENTIFY=1
+            action_jar_config $JAR_NAME "TAG=Built at `date +"%Y-%m-%d-%k:%M"` using M7CM" "TYPE=Spigot" "PROXY=0" "VERSION=Spigot-$VERSION" "VERSION_MC=$VERSION" "BUILDTOOL=0"
+        else
+            func_notification 2 "You have aborted configuring jar '$JAR_NAME', this may result in unexpected consequences. It'd be better to configure it now using '$PATH_SCRIPT jar config $JAR_NAME' "
+        fi
+        return 0
+    fi
 } ## Usage: action_jar_build [jar name] [buildtool] [version]
-    ## Return: 0 success 1 environment error-jre 2 environment error-git, 3 buildtool not exist, 4 not a buildtool, 5 user aborted because of suspicious version, 6 build error,
+    ## Return: 0 success 1 environment error-jre 2 environment error-git, 3 buildtool not exist, 4 not a buildtool, 5 can not overwrite existing jar, 6 user aborted overwriting, 7 user aborted because of suspicious version, 8 build error,9 build failed
 
 
 action_account_define() {
@@ -867,11 +935,14 @@ action_account_config() {
     subfunc_account_safely_read "$ACCOUNT_NAME"
     func_account_config "$ACCOUNT_NAME"
 }
-action_account_remove() {
+# action_account_remove() {
     
-}
+# }
 action_help() {
-    echo "$PATH_SCRIPT"
+    func_draw_line
+    func_print_center "Command Help for Minecraft 7 Command-line Manager"
+    func_draw_line
+    func_multilayer_expand_menu "$PATH_SCRIPT" "" 0
     func_multilayer_expand_menu "help" "print this help message" 
     func_multilayer_expand_menu "define [server] [account] [jar] [user] [directory] [max ram] [min ram]" "(re)define a server so M7CM can manage it." 
     func_multilayer_expand_menu "config [server] [option] [value]" "change one specific option you defined by $PATH_SCRIPT define" 
@@ -896,20 +967,22 @@ action_help() {
     func_multilayer_expand_menu "import [jar] [link/path]" "import a jar from an online source or local disk, you need GNU/Wget to download the jar" 2
     func_multilayer_expand_menu "push [jar] [server]" "push the given jar to this server" 2
     func_multilayer_expand_menu "pull [jar] [server] [remote jar]" "pull the remote jar, use fullname" 2
-    func_multilayer_expand_menu "config [jar]" "change the configuration of the jar" 2
-    func_multilayer_expand_menu "build [jar] [buildtool-jar] [version]" "build a jar file of the given version using spigot buildtool, you need to import or download the buildtool first" 2
+    func_multilayer_expand_menu "config [jar] ([option1=value1] [option2=value2] ...)" "change the given configuration of the jar and bring you to configuration terminal-UI" 2
+    func_multilayer_expand_menu "build [jar] [buildtool-jar] ([version])" "build a jar file of the given version using spigot buildtool, you need to import or download the buildtool first" 2
     func_multilayer_expand_menu "remove [jar name]" "remove a jar and this configuration" 2
-    func_multilayer_expand_menu "info [jar]" "check the configuration of the jar file" 2
+    func_multilayer_expand_menu "info [jar1] [jar2] ..." "check the configuration of the jar file" 2
     func_multilayer_expand_menu "list" "lsit all jar files and their configuration" 2 1
     func_multilayer_expand_menu "account [sub action]" "" 1 1
     func_multilayer_expand_menu "define [account] [hostname/ip] [ssh port] [user] [private key]" "" 2 "" 1
     func_multilayer_expand_menu "config [account]" "" 2 "" 1
     func_multilayer_expand_menu "remove [account]" "" 2 1 1
-
-    func_notification 0 "Any [account] used by a server must have been pre-defined by $PATH_SCRIPT account define, M7CM will use SSH to connect to this host and perform management. Even though you want to run and manage servers on the same host as M7CM, you still need to use SSH to ensure both the isolation and the security. Notice that the [account] here is just for easy memorizing, and does not have to be the same as [user]"
-    func_notification 0 "Any [jar] used by a server must have been pre-imported by $PATH_SCRIPT import, or you can use remote:[full name with file extension] to refer to a jar file in the directory of the server (will be renamed to server.jar and import into jar library with the same name of the server then)"
-    func_notification 0 "M7CM has a reserverd server named _LAST_ refering to the last server you've successfully managed and also a reserverd group _LAST_. there's also a reserverd group named _ALL_ contains all servers"
+    func_draw_line
+    func_notification 0 "Any [account] used by a server must have been pre-defined by '$PATH_SCRIPT account define', M7CM will use SSH to connect to this host and perform management. Even if you want to run and manage servers on the same host as M7CM, you still need to use SSH to ensure both the isolation and the security. Notice that the [account] here is just for easy memorizing, and does not have to be the same as [user]"
+    func_notification 0 "Any [jar] used by a server must have been pre-imported by '$PATH_SCRIPT import', or you can use remote:[full name with file extension] to refer to a jar file in the directory of the server (will be renamed to server.jar and import into jar library with the same name of the server then)"
+    func_notification 0 "M7CM has a reserverd server '_LAST_' refering to the last server you've successfully managed and also a reserverd group '_LAST_'. there's also a reserverd group named '_ALL_' refering to all servers"
     func_notification 0 "To build a spigot jar using a spigot buildtool, you need import a buildtool first, configure it to be recognized as a buildtool, and got jre and git installed."
+    func_draw_line
+    return 0
 }
 action_version() {
     func_draw_line
@@ -917,6 +990,7 @@ action_version() {
     func_print_center "Version $VERSION, updated at $UPDATE_DATE "
     func_print_center "Powered by GNU/bash $BASH_VERSION"
     func_draw_line
+    return 0
 }
 main() {
     func_environment_check_pre_run
@@ -987,10 +1061,12 @@ main() {
                     action_jar_import "${@:3}"
                 ;;
                 push)
+                    echo "UNDER PROGRAMMING"
                     #push a jar to a server
                     action_jar_push "${@:3}"
                 ;;
                 pull)
+                    echo "UNDER PROGRAMMING"
                     #pull a jar from a server
                     action_jar_pull "${@:3}"
                 ;;
@@ -1019,13 +1095,13 @@ main() {
             #account related actions
             case "$2" in
                 define)
-                    action_account_define "$3" "$4" "$5" "$6" "$7"
+                    action_account_define "${@:3}"
                 ;;
                 config)
-                    action_account_config "$3"
+                    action_account_config "${@:3}"
                 ;;
                 remove)
-                    action_account_remove "$3"
+                    action_account_remove "${@:3}"
                 ;;
             esac
         *)
