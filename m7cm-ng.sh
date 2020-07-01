@@ -14,17 +14,24 @@ VERSION="0.0.1"
 UPDATE_DATE="2020/06/27"
 PATH_SCRIPT=$(readlink -f "$0")
 PATH_DIRECTORY=$(dirname $PATH_SCRIPT)
-
 # Clear all variables
 ## Global tmp
 TMP=''
 ## Environment related
 ENV_SCREEN=0
 ENV_WGET=0
+ENV_TIMEOUT=0
+ENV_SSH=0
+ENV_SCP=0
+ENV_SFTP=0
 ENV_JRE=0
 ENV_WGET=0
 ENV_SSHD=0
 ENV_GIT=0
+ENV_NC=0
+##
+ENV_METHOD_PORT=0
+ENV_METHOD_FILE=0
 ## JAR related
 JAR_NAME=''
 JAR_TAG=''
@@ -34,6 +41,19 @@ JAR_VERSION_MC=''
 JAR_PROXY=0
 JAR_BUILDTOOL=0
 JAR_SIZE=0
+## ACCOUNT related
+ACCOUNT_NAME=''
+ACCOUNT_HOST=''
+ACCOUNT_PORT=''
+ACCOUNT_USER=''
+ACCOUNT_KEY=''
+ACCOUNT_VALID=0
+## SERVER related
+SERVER_ACCOUNT=''
+SERVER_JAR=''
+SERVER_DIRECTORY=''
+SERVER_RAM_MIN=''
+SERVER_RAM_MAX=''
 # ### Minor JAR related 
 # LINK=''
 # REGEX=''
@@ -57,6 +77,7 @@ func_draw_line() {
     else
         local LENGTH="$2"
     fi
+    local i
     for i in $(seq 1 $LENGTH); do
         printf "$SYMBOL"
     done
@@ -111,13 +132,66 @@ func_notification() {
     return 0
 } ## Usage: func_echo_notification [level] [notification]
 func_environment_local() {
-    [[ $# = 0 ]] && func_environment_local bash screen wget jre root sshd git basefolder subfolder
+    [[ $# = 0 ]] && func_environment_local bash ssh scp sftp timeout nc screen wget jre root sshd git basefolder subfolder
     local TMP
     for TMP in $@; do
         case "$TMP" in
         bash)
             [[ -z "$BASH_VERSION" ]] && func_notification 4 "GNU/Bash not detected! You need GNU/Bash to run M7CM."
             ;;
+        ssh)
+            ssh 1>/dev/null 2>&1
+            if [[ $? != 255 ]]; then
+                func_notification 3 "SSH not detected! You need SSH to perform 'remote' server and management. For security and isolation, even the servers running on local device (yes, this VERY device) should be managed through SSH and have their own dedicated accounts (could be duplicated if you like risky stuff)."
+                func_confirmation N "Should we ignore this and use M7CM as just a local jar library manager?"
+                if [[ $? = 0 ]]; then
+                    ENV_SSH=0
+                else
+                    exit
+                fi
+            else
+                ENV_SSH=1
+            fi
+            ;;
+        scp)
+            scp --version 1>/dev/null 2>&1
+            if [[ $? != 1 ]]; then
+                func_notification 2 "SSH SCP not detected! You need SCP or SFTP to push and pull jar files to and from remote server. For security and isolation, even jars ofthe servers running on local device (yes, this VERY device) should be transfered using SCP or SFTP. You can ignore this if you don't need to do that."
+            else
+                ENV_SCP=1
+                ENV_METHOD_FILE=1
+            fi
+            ;;
+        sftp)
+            sftp --version 1>/dev/null 2>&1
+            if [[ $? != 1 ]]; then
+                func_notification 2 "SSH SFTP not detected! You need SCP or SFTP to push and pull jar files to and from remote server. For security and isolation, even jars on servers running on local device (yes, this VERY device) should be transfered using SCP or SFTP. You can ignore this if you don't need to do that."
+            else
+                ENV_SFTP=1
+                ENV_METHOD_FILE=1
+            fi
+            ;;
+        timeout)
+            timeout --version 1>/dev/null 2>&1
+            if [[ $? != 0 ]]; then
+                func_notification 1 "GNU/Timeout not found on this host. M7CM uses either GNU/timeout, nmap ncat or GNU/wget to check for remote tcp port. You may have issues if none of them is available."
+                ENV_NC=0
+            else
+                ENV_NC=1
+                ENV_METHOD_PORT=1
+            fi
+            ;;
+        nc)
+            nc --version 1>/dev/null 2>&1
+            if [[ $? != 0 ]]; then
+                func_notification 1 "Nmap ncat not found on this host. M7CM uses either GNU/timeout, nmap ncat or GNU/wget to check for remote tcp port. You may have issues if none of them is available."
+                ENV_NC=0
+            else
+                ENV_NC=1
+                ENV_METHOD_PORT=1
+            fi
+            ;;
+        
         screen)
             screen -mSUd m7cm_test exit 1>/dev/null 2>&1
             if [[ $? != 0 ]]; then
@@ -130,10 +204,11 @@ func_environment_local() {
         wget)
             wget --version 1>/dev/null 2>&1
             if [[ $? != 0 ]]; then
-                func_notification 2 "GNU/Wget not detected on this host. You need GNU/Wget to download jar files from online resources, however you can proceed without installing it if you just want M7CM to use imported local jar files."
+                func_notification 2 "GNU/Wget not detected on this host. You need GNU/Wget to download jar files from online resources, however you can proceed without installing it if you just want M7CM to use imported local jar files. Also, M7CM uses either GNU/timeout, nmap ncat or GNU/wget to check for remote tcp port. You may have issues if none of them is available."
                 ENV_WGET=0
             else
                 ENV_WGET=1
+                ENV_METHOD_PORT=1
             fi 
             ;;  
         jre)
@@ -216,7 +291,7 @@ func_multilayer_expand_menu() {
         if [[ -z "$TMP" ]]; then
             if [[ $LAYER = $i ]]; then
             ## Draw > for current layer
-                if [[ -z "$4" ]]; then
+                if [[ -z "$4" || "$4" = "0" ]]; then
                     printf "┣> "
                 else
                     ##Draw L if ends
@@ -236,13 +311,13 @@ func_multilayer_expand_menu() {
     echo -e "\e[100m$2\e[0m"
     return 0
 } ## Usage: func_multilayer_expand_menu [title] [content] [layer] [end] [no layer1] [no layer2] [...]
-func_yn() {
+func_confirmation() {
     local CHOICE=''
     while true; do
         if [[ "$1" = "Y" ]]; then
-            printf "\e[100mConfirmation:\e[0m ${@:2}(Y/n)"
+            printf "\e[7mConfirmation:\e[0m ${@:2}(Y/n)"
         elif [[ "$1" = "N" ]]; then
-            printf "\e[100mConfirmation:\e[0m ${@:2}(y/N)"
+            printf "\e[7mConfirmation:\e[0m ${@:2}(y/N)"
         else
             return 255 #wrong option
         fi
@@ -253,9 +328,66 @@ func_yn() {
             return 1
         fi
     done
-} ## Usage: func_yn [default option, Y/N] [content], return: 0 for yes, 1 for no, 255 for wrong yn
-
+} ## Usage: func_confirmation [default option, Y/N] [content], return: 0 for yes, 1 for no, 255 for wrong yn
+func_refresh() {
+    local i
+    local j
+    for i in $(seq "$1" -1 1); do
+        printf "\e[1m\e[5mREFRESHING\e[0mRefreshing in $i seconds"
+        for j in $(seq 1 $(( $1 - $i + 1 ))); do
+            printf '.'
+        done
+        printf '\r'
+        sleep 1
+    done
+    clear
+} ## Usage: func_refresh_counting [second]
+func_anykey() {
+    if [[ $# = 0 ]]; then
+        read -t 5 -n 1 -s -r -p $'\e[1m\e[5mPress any key to continue...\n\e[0m'
+    else
+        printf "\e[1m\e[5m"
+        echo -e "$@...\n\e[0m\c"
+        read -t 5 -n 1 -s -r -p ''
+    fi
+} ## Usage: func_anykey [content]
 #### specified functions
+func_port_validate() {
+    func_notification 1 "Diagnosing if tcp port '$2' on host '$1' is open ..."
+    if [[ $ENV_METHOD_PORT = 0 ]]; then
+        func_notification 3 "Neither GNU/timeout, nmap ncat or GNU/wget is available, TCP port validation failed."
+        return 1
+    fi
+    if [[ $ENV_TIMEOUT = 1 ]]; then
+        timeout 10 bash -c "</dev/tcp/$ACCOUNT_HOST/$ACCOUNT_PORT" 1>/dev/null 2>&1
+        if [[ $? = 0 ]]; then
+            func_notification 1 "Remote tcp port '$ACCOUNT_PORT' is open"
+            return 0
+        else
+            func_notification 3 "GNU/timeout got no answer from remote TCP port."
+        fi
+    fi
+    if [[ $ENV_NC = 1 ]]; then
+        nc -z -v -w5 $ACCOUNT_HOST $ACCOUNT_PORT 1>/dev/null 2>&1 
+        if [[ $? = 0 ]]; then
+            func_notification 1 "Remote tcp port '$ACCOUNT_PORT' is open"
+            return 0
+        else
+            func_notification 3 "Nmap ncat got no answer from remote TCP port."
+        fi
+    fi
+    if [[ $ENV_WGET = 1 ]]; then
+        wget -t1 -T1 $ACCOUNT_HOST:$ACCOUNT_PORT 1>/dev/null 2>&1 
+        if [[ $? = 4 ]]; then
+            func_notification 1 "Remote tcp port '$ACCOUNT_PORT' is open"
+            return 0
+        else
+            func_notification 3 "GNU/wget got no answer from remote TCP port."
+        fi
+    fi
+    func_notification 3 "All tests failed. Check the firewall on the remote host"
+    return 2
+} ## Usage: func_port_validate [host] [port]
 func_jar_config() {
     local CHANGE
     local OPTION
@@ -290,7 +422,7 @@ func_jar_config() {
                     if [[ ! -w "$PATH_DIRECTORY/jar/$VALUE.jar" || ! -w "$PATH_DIRECTORY/jar/$VALUE.conf" ]]; then
                         func_notification 2 "Renaming aborted. A jar with the same name '$VALUE' has already exist and can't be overwriten due to lack of writing permission. Check your permission."
                     else
-                        func_yn N "A jar with the same name '$VALUE' has already exist, are you sure you want to overwrite it?"
+                        func_confirmation N "A jar with the same name '$VALUE' has already exist, are you sure you want to overwrite it?"
                         if [[ $? = 0 ]]; then
                             mv -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" "$PATH_DIRECTORY/jar/$VALUE.jar"
                             rm -f "$PATH_DIRECTORY/jar/$VALUE.conf" 1>/dev/null 2>&1
@@ -314,7 +446,264 @@ func_jar_config() {
     done
     return 0
 } ## Usage: func_jar_config [option1=value1]   [option2=value2]
-
+func_account_config() {
+    local CHANGE
+    local OPTION
+    local VALUE
+    local IFS
+    while [[ $# > 0 ]]; do
+        local CHANGE="$1"
+        local IFS=' ='
+        read -r OPTION VALUE <<< "$CHANGE"
+        OPTION=`echo "$OPTION" | tr [a-z] [A-Z]`
+        local IFS=$' \t\n'
+        case "$OPTION" in
+            TAG|EXTRA)
+                eval ACCOUNT_$OPTION=\"$VALUE\"
+                func_notification 0 "'$OPTION' set to '$VALUE'"
+            ;;
+            HOST)
+                if [[ -z "$VALUE" ]]; then
+                    ACCOUNT_HOST="localhost"
+                    func_notification 2 "No host specified, using default value 'localhost'"
+                else
+                    ACCOUNT_HOST="$VALUE"
+                    func_notification 0 "'HOST' set to '$VALUE'"
+                fi
+            ;;
+            USER)
+                if [[ -z "$VALUE" ]]; then
+                    ACCOUNT_USER="$USER"
+                    func_notification 2 "No user specified, using current user '$USER'"
+                else
+                    ACCOUNT_USER="$VALUE"
+                    func_notification 0 "'USER' set to '$VALUE'"
+                fi
+            ;;
+            PORT)
+                local REGEX='^[0-9]+$'
+                if [[ "$VALUE" =~ $REGEX ]] && [[ "$VALUE" -ge 0 && "$VALUE" -le 65535 ]]; then
+                    ACCOUNT_PORT="$VALUE"
+                    func_notification 0 "'PORT' set to '$VALUE'"
+                elif [[ -z "$VALUE" ]]; then
+                    func_notification 2 "No port specified, using default value '22' as [port]"
+                    ACCOUNT_PORT="22"
+                else
+                    func_notification 2 "'$VALUE' is not a valid port, using default value '22' as [port]"
+                    ACCOUNT_PORT="22"
+                fi
+            ;;
+            KEY)
+                VALUE=$(eval echo "$VALUE")
+                ## convert ~ to real location
+                if [[ ! -f "$VALUE" ]]; then
+                    func_notification 3 "Keyfile '$VALUE' not exist"
+                    return 1 # key not readable
+                elif [[ ! -r "$VALUE" ]]; then
+                    func_notification 3 "Keyfile '$VALUE' not readable, check your permission"
+                    return 2 # not readable
+                else
+                    ACCOUNT_KEY="$VALUE"
+                    func_notification 0 "'KEY' set to '$VALUE'"
+                fi
+            ;;
+            NAME)
+                if [[ -z "$ACCOUNT_NAME" ]]; then
+                    func_notification 2 "Renaming aborted due to no account being selected"
+                elif [[ ! -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" ]]; then
+                    ACCOUNT_NAME="$VALUE"
+                    func_notification 0 "'NAME' set to '$VALUE'"
+                elif [[ -f "$PATH_DIRECTORY/account/$VALUE.conf" ]]; then
+                    if [[ ! -w "$PATH_DIRECTORY/account/$VALUE.conf" ]]; then
+                        func_notification 2 "Renaming aborted. An account with the same name '$VALUE' has already exist and can't be overwriten due to lack of writing permission. Check your permission."
+                    else
+                        func_confirmation N "An account with the same name '$VALUE' has already exist, are you sure you want to overwrite it?"
+                        if [[ $? = 0 ]]; then
+                            mv -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" "$PATH_DIRECTORY/account/$VALUE.conf"
+                            ACCOUNT_NAME="$VALUE"
+                            func_notification 0 "'NAME' set to '$VALUE'"
+                        else
+                            return 3 # abort overwriting
+                        fi
+                    fi  
+                else
+                    mv "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" "$PATH_DIRECTORY/account/$VALUE.conf" 
+                    ACCOUNT_NAME="$VALUE"
+                    func_notification 0 "'NAME' set to '$VALUE'"
+                fi
+            ;;
+            *)
+                func_notification 1 "'$OPTION' is not an available option, ignored"
+            ;;
+        esac
+        shift
+    done
+    return 0
+} ##
+func_server_config() {
+    local CHANGE
+    local OPTION
+    local VALUE
+    local IFS
+    while [[ $# > 0 ]]; do
+        local CHANGE="$1"
+        local IFS=' ='
+        read -r OPTION VALUE <<< "$CHANGE"
+        OPTION=`echo "$OPTION" | tr [a-z] [A-Z]`
+        local IFS=$' \t\n'
+        case "$OPTION" in
+            TAG|EXTRA_JAVA|EXTRA_JAR)
+                eval SERVER_$OPTION="$VALUE"
+                func_notification 1 "'$OPTION' is set to '$VALUE'"
+                ;;
+            PORT)
+                local REGEX='^[0-9]+$'
+                if [[ "$VALUE" =~ $REGEX ]] && [[ "$VALUE" -ge 0 && "$VALUE" -le 65535 ]]; then
+                    ACCOUNT_PORT="$VALUE"
+                    func_notification 0 "'PORT' set to '$VALUE'"
+                elif [[ -z "$VALUE" ]]; then
+                    func_notification 2 "No port specified, using default value '25565' as [port]"
+                    ACCOUNT_PORT="25565"
+                else
+                    func_notification 2 "'$VALUE' is not a valid port, using default value '25565' as [port]"
+                    ACCOUNT_PORT="25565"
+                fi
+                ;;
+            DIRECTOTY)
+                if [[ -z "$VALUE" ]]; then
+                    SERVER_DIRECTORY='~'
+                    func_notification 3 "'DIRECTORY' is empty, defaulting to '~'"
+                else
+                    SERVER_DIRECTORY="$VALUE"
+                    func_notification 1 "'DIRECTORY' is set to '$VALUE'"
+                fi
+                ;;
+            JAR)
+                if [[ -z "$VALUE" ]]; then
+                    SERVER_DIRECTORY="server.jar"
+                    func_notification 3 "'JAR' is empty, defaulting to 'server.jar'"
+                else
+                    SERVER_DIRECTORY="$VALUE"
+                    func_notification 1 "'JAR' is set to '$VALUE'"
+                fi
+                ;;
+            ACCOUNT)
+                if [[ ! -f "$PATH_DIRECTORY/account/$VALUE.conf" ]]; then
+                    func_notification 3 "Account '$VALUE' does not exist"
+                    return 1 #Account not exist
+                else
+                    SERVER_ACCOUNT="$VALUE"
+                    func_notification 1 "'ACCOUNT' is set to '$VALUE'"
+                fi
+                ;;
+            RAM_MIN|RAM_MAX)
+                VALUE=`echo "$VALUE" | tr [a-z] [A-Z]`
+                local REGEX='^[0-9]+[MG]$'
+                if [[ "$VALUE" =~ $REGEX ]]; then
+                    local SIZE=${VALUE:0:-1}
+                    if [[ "${VALUE: -1}" = "G" ]]; then
+                        SIZE=$(( $SIZE * 1024 ))
+                    fi
+                    eval local COMPARE_$OPTION=$SIZE
+                    if [[ $SIZE -lt 32 ]]; then
+                        func_notification 3 "'$VALUE' is too small, you need at least 32M to even start a server instance."
+                        return 4 #Too small
+                    elif [[ $SIZE -lt 128 ]]; then
+                        func_notification 2 "'$VALUE' seems to be too small, we suggest at least 128M, but maybe you can start a server with '$VALUE' ram?"
+                        func_confirmation N "Set '$OPTION' to '$VALUE' anyway?"
+                        if [[ $? = 0 ]]; then
+                            func_notification 1 "'$OPTION' is set to '$VALUE'"
+                            eval SERVER_$OPTION="$VALUE"
+                        else
+                            return 5 ## aborted, kind of small
+                        fi
+                    elif [[ $SIZE -gt 8192 ]]; then
+                        func_notification 2 "'$VALUE' seems to be too large, 8G of ram is usually the most a normal minecraft server can take, and even that is under an extrodinary situation"
+                        func_confirmation N "Set '$OPTION' to '$VALUE' anyway?"
+                        if [[ $? = 0 ]]; then
+                            func_notification 1 "'$OPTION' is set to '$VALUE'"
+                            eval SERVER_$OPTION="$VALUE"
+                        else
+                            return 6 ## aborted, too large
+                        fi
+                    else
+                        func_notification 1 "'$OPTION' is set to '$VALUE'"
+                        eval SERVER_$OPTION="$VALUE"
+                    fi
+                elif [[ -z "$VALUE" ]]; then
+                    local OLD_VALUE=$(eval echo \$SERVER_$OPTION)
+                    if [[ ! -z "$OLD_VALUE" ]]; then
+                        func_notification 2 "'$OPTION' is not changed ($OLD_VALUE)"
+                    ## It is empty, should check if another value is also empty
+                    ## Both empty
+                    elif [[ -z "$SERVER_RAM_MIN" && -z "$SERVER_RAM_MAX" ]]; then
+                        eval SERVER_$OPTION="1G"
+                        func_notification 2 "'$OPTION' is empty, defaulting to 1G"
+                    ## The other is not empty: ram_max
+                    elif [[ "$OPTION" = "RAM_MIN" ]]; then
+                        SERVER_RAM_MIN="$SERVER_RAM_MAX"
+                        func_notification 2 "'RAM_MIN' is empty, defaulting to current maximum ram '$SERVER_RAM_MAX'"
+                    ## The other is not empty: ram_min
+                    elif [[ "$OPTION" = "RAM_MAX" ]]; then
+                        SERVER_RAM_MAX="$SERVER_RAM_MIN"
+                        func_notification 2 "'RAM_MAX' is empty, defaulting to current minimum ram '$SERVER_RAM_MIN'"
+                    fi
+                else
+                    func_notification 3 "'$VALUE' is not a valid ram size. Accept: interger+M/G, i.e. 1024M, 1G"
+                    return 7 ## illegal format
+                fi
+                ;;
+            NAME)
+                if [[ -z "$SERVER_NAME" ]]; then
+                    func_notification 2 "Renaming aborted due to no server being selected"
+                elif [[ ! -f "$PATH_DIRECTORY/server/$VALUE.conf" ]]; then
+                    SERVER_NAME="$VALUE"
+                    func_notification 0 "'NAME' set to '$VALUE'"
+                elif [[ -f "$PATH_DIRECTORY/server/$VALUE.conf" ]]; then
+                    if [[ ! -w "$PATH_DIRECTORY/server/$VALUE.conf" ]]; then
+                        func_notification 2 "Renaming aborted. A server with the same name '$VALUE' has already exist and can't be overwriten due to lack of writing permission. Check your permission."
+                    else
+                        func_confirmation N "A server with the same name '$VALUE' has already exist, are you sure you want to overwrite it?"
+                        if [[ $? = 0 ]]; then
+                            mv -f "$PATH_DIRECTORY/account/$SERVER_NAME.conf" "$PATH_DIRECTORY/account/$VALUE.conf"
+                            SERVER_NAME="$VALUE"
+                            func_notification 0 "'NAME' set to '$VALUE'"
+                        else
+                            return 8 # abort overwriting
+                        fi
+                    fi  
+                else
+                    mv "$PATH_DIRECTORY/account/$SERVER_NAME.conf" "$PATH_DIRECTORY/account/$VALUE.conf" 
+                    SERVER_NAME="$VALUE"
+                    func_notification 0 "'NAME' set to '$VALUE'"
+                fi
+                ;;
+            *)
+                func_notification 1 "'$OPTION' is not an available option, ignored"
+                ;;
+        esac
+        shift
+    done
+    ## Compare ram size
+    if [[ ! -z "$COMPARE_RAM_MIN" || ! -z "$COMPARE_RAM_MAX" ]]; then
+        if [[ -z "$COMPARE_RAM_MIN" ]]; then
+            local COMPARE_RAM_MIN=${SERVER_RAM_MIN:0:-1}
+            if [[ "${VALUE: -1}" = "G" ]]; then
+                COMPARE_RAM_MIN=$(( $COMPARE_RAM_MIN * 1024 ))
+            fi
+        elif [[ -z "$COMPARE_RAM_MAX" ]]; then
+            local COMPARE_RAM_MAX=${SERVER_RAM_MAX:0:-1}
+            if [[ "${VALUE: -1}" = "G" ]]; then
+                COMPARE_RAM_MAX=$(( $COMPARE_RAM_MAX * 1024 ))
+            fi
+        fi
+        if [[ $COMPARE_RAM_MIN -gt $COMPARE_RAM_MAX ]]; then
+            SERVER_RAM_MIN="$SERVER_RAM_MAX"
+            func_notification 2 "The mininum ram is greater than the maximum ($SERVER_RAM_MIN > $SERVER_RAM_MAX), 'RAM_MAX' is adjusted to '$SERVER_RAM_MIN'"
+        fi
+    fi
+    return 0
+}
 #### sub functions, without arguments
 ###### jar related
 subfunc_jar_name_fix() {
@@ -339,7 +728,7 @@ subfunc_jar_identify() {
         func_notification 0 "Depending on the type of the jar, the performance of this host, and your network connection, it may take a few seconds or a few minutes to identify it. i.e. Paper pre-patch jar would download the vanilla jar and patch it"
         pushd "$TMP" 1>/dev/null 2>&1
         func_notification 1 "Switched to temporary folder '$TMP'"
-        JAR_VERSION=$(java -jar "$PATH_DIRECTORY/jar/$JAR_NAME.jar" --version) 1>/dev/null 2>&1
+        JAR_VERSION=$(java -jar "$PATH_DIRECTORY/jar/$JAR_NAME.jar" --version) 1>/dev/null 2>&1 3>&1
         local RETURN=$?
         if [[ $RETURN = 0 ]]; then
             if [[ "$JAR_VERSION" =~ "BungeeCord" ]]; then 
@@ -381,6 +770,12 @@ subfunc_jar_identify() {
                 else    
                     echo "Looks like it contains a Paper game server"
                 fi
+            elif [[ "$JAR_VERSION" =~ "version is not a recognized option" ]]; then
+                echo "Looks like it contains a vannila server"
+                JAR_PROXY=0
+                JAR_BUILDTOOL=0
+                JAR_TYPE="Vanilla"
+                JAR_VERSION="Unknown"
             else
                 JAR_TYPE="$JAR_VERSION"
                 JAR_PROXY=0
@@ -398,14 +793,8 @@ subfunc_jar_identify() {
                 JAR_VERSION=`echo $JAR_VERSION | awk '{print $1}'`
                 JAR_VERSION_MC="From 1.8"
                 JAR_TAG="Sweet! You can build a spigot jar using '$PATH_SCRIPT jar build [jar] $JAR_NAME [version]!'"
-            elif [[ "$JAR_VERSION" =~ "version is not a recognized option" ]]; then
-                echo "Looks like it contains a vannila server"
-                JAR_PROXY=0
-                JAR_BUILDTOOL=0
-                JAR_TYPE="Vanilla"
-                JAR_VERSION="Unknown"
             elif [[ "$JAR_VERSION" =~ "Error: Invalid or corrupt jarfile" ]]; then
-                func_yn Y "The jar file is broken, delete it?"
+                func_confirmation Y "The jar file is broken, delete it?"
                 if [[ $? = 0 ]]; then
                     rm -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
                     popd
@@ -442,17 +831,17 @@ subfunc_jar_info() {
             func_multilayer_expand_menu "TAG:" "You have not tagged this jar yet"
         fi
         if [[ $JAR_PROXY = 1 ]]; then
-            func_multilayer_expand_menu "PROXY: This jar contains a proxy server" "You can do a multi-host using this proxy"
+            func_multilayer_expand_menu "PROXY: √" "This jar contains a proxy server. You can do a multi-host using this proxy"
         else
             func_multilayer_expand_menu "PROXY: X" 
         fi
         if [[ $JAR_BUILDTOOL = 1 ]]; then
-            func_multilayer_expand_menu "BUILDTOOL: This jar contains Spigot Buildtools" "You may want to try '$PATH_SCRIPT jar build [jar] $JAR_NAME $VERSION'"
+            func_multilayer_expand_menu "BUILDTOOL: √ " "This jar contains Spigot Buildtools. You may want to build a jar using '$PATH_SCRIPT jar build [jar] $JAR_NAME $VERSION'"
         else
             func_multilayer_expand_menu "BUILDTOOL: X"
         fi
         func_multilayer_expand_menu "VERSION: $JAR_VERSION" "The version of the jar itself"
-        func_multilayer_expand_menu "VERSION_MC: $JAR_VERSION_MC" "The version of minecraft servers it can provide" 1 1
+        func_multilayer_expand_menu "VERSION_MC: $JAR_VERSION_MC" "The version of minecraft server it can provide" 1 1
         return 0
     fi
 } ## Read and print jar configuration. Return: 0 success, 1 not exist
@@ -470,6 +859,7 @@ subfunc_jar_config_write() {
         echo "JAR_VERSION=\"$JAR_VERSION\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
         echo "JAR_VERSION_MC=\"$JAR_VERSION_MC\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
         func_notification 0 "Successfully written values to config file $JAR_NAME.conf"
+        return 0
     fi
 }
 subfunc_jar_config_read() {
@@ -499,29 +889,95 @@ subfunc_jar_config_read() {
     return 0
 } ## Safely read jar info, ignore redundant values
 ###### account related
-subfunc_account_write() {
+subfunc_account_validate() {
+    if [[ ! -f "$ACCOUNT_KEY" ]]; then
+        func_notification 3 "Keyfile '$ACCOUNT_KEY' does not exist, validation failed"
+        return 1 # key not exist
+    fi
+    if [[ $ENV_SSH = 0 ]]; then
+        func_notification 3 "SSH not detected, validation function disabled"
+        return 2 # no ssh
+    fi
+    func_notification 1 "Validating account configuration..."
+    ssh $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA exit
+    if [[ $? = 0 ]]; then
+        func_notification 1 "Validation passed"
+        ACCOUNT_VALID=1
+        return 0
+    else
+        func_notification 2 "SSH test failed, maybe your account configuration is wrong?"
+    fi
+    func_notification 1 "Diagnosing connection to the remote host"
+    ping -c3 -i0.4 -w0.8 "$ACCOUNT_HOST" 1>/dev/null 2>&1
+    if  [[ $? = 0 ]]; then
+        func_notification 1 "Connection to the remote host '$ACCOUNT_HOST' is working fine, maybe there's problem with the port '$ACCOUNT_PORT'?"
+    else
+        func_notification 3 "Can not get IGMP replay from remote host '$ACCOUNT_HOST', check your network connection"
+        return 3 # ping failed, not connectable
+    fi
+    func_port_validate "$ACCOUNT_HOST" "$ACCOUNT_PORT"
+}
+subfunc_account_info() {
+    if [[ ! -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" ]]; then
+        func_notification 3 "Configuration file for account '$ACCOUNT_NAME' does not exist, maybe you should run '$PATH_SCRIPT account define $JAR_NAME' first"
+        return 1 #config not exist
+    else
+        subfunc_account_config_read
+        func_multilayer_expand_menu "HOST: $ACCOUNT_HOST"
+        func_multilayer_expand_menu "PORT: $ACCOUNT_PORT"
+        if [[ ! -z "$ACCOUNT_TAG" ]]; then
+            func_multilayer_expand_menu "TAG: $ACCOUNT_TAG"
+        else
+            func_multilayer_expand_menu "TAG:" "You have not tagged this jar yet"
+        fi
+        func_multilayer_expand_menu "USER: $ACCOUNT_USER"
+        if [[ ! -z "$ACCOUNT_LIST" ]]; then
+            func_multilayer_expand_menu "KEY: ********" "Private key path is hiden in list"
+        else
+            func_multilayer_expand_menu "KEY: $ACCOUNT_KEY"
+        fi
+        if [[ ! -z "$ACCOUNT_EXTRA" ]]; then
+            func_multilayer_expand_menu "EXTRA: $ACCOUNT_EXTRA" "" 
+        else
+            func_multilayer_expand_menu "EXTRA: " "You have not added extra arguments for this account" 
+        fi
+        if [[ ! -z "$ACCOUNT_LIST" ]]; then
+            func_multilayer_expand_menu "Current SSH command ->" "ssh $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i ******** $ACCOUNT_EXTRA" 1 1
+        else
+            func_multilayer_expand_menu "Current SSH command ->" "ssh $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA" 1 1
+        fi
+        return 0
+    fi
+} 
+subfunc_account_config_write() {
     if [[ -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" && ! -w "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" ]]; then
         func_notification 3 "Can not write to configuration file '$ACCOUNT_NAME.conf' due to lacking of writing permission. Check your permission"
         return 1
     else
         func_notification 1 "Proceeding to write values to config file '$ACCOUNT_NAME.conf'...."
         echo "## Configuration for account '$ACCOUNT_NAME', DO NOT EDIT THIS UNLESS YOU KNOW WHAT YOU ARE DOING" > "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
+        echo "ACCOUNT_TAG=\"$ACCOUNT_TAG\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
         echo "ACCOUNT_HOST=\"$ACCOUNT_HOST\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
         echo "ACCOUNT_PORT=\"$ACCOUNT_PORT\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
         echo "ACCOUNT_USER=\"$ACCOUNT_USER\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
         echo "ACCOUNT_KEY=\"$ACCOUNT_KEY\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
+        echo "ACCOUNT_EXTRA=\"$ACCOUNT_EXTRA\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
         func_notification 0 "Successfully written values to config file '$ACCOUNT_NAME.conf'"
+        return 0
     fi
 }
-subfunc_account_read() {
+subfunc_account_config_read() {
     if [[ ! -f $PATH_DIRECTORY/account/$ACCOUNT_NAME.conf ]]; then
         func_notification 3 "Configuration file for Account '$ACCOUNT_NAME' not found, use '$PATH_SCRIPT account define $ACCOUNT_NAME' to define it first."
         return 1
+    elif [[ ! -r $PATH_DIRECTORY/account/$ACCOUNT_NAME.conf ]]; then
+        func_notification 3 "Configuration file for Account '$ACCOUNT_NAME' not readable, check your permission."
+        return 2
     fi
     local IFS="="
     while read -r NAME VALUE; do
         case "$NAME" in
-            ACCOUNT_HOST|ACCOUNT_PORT|ACCOUNT_USER|ACCOUNT_KEY)
+            ACCOUNT_TAG|ACCOUNT_HOST|ACCOUNT_PORT|ACCOUNT_USER|ACCOUNT_KEY|ACCOUNT_EXTRA)
                 eval $NAME=$VALUE
             ;;
             *)
@@ -533,35 +989,122 @@ subfunc_account_read() {
     done < $PATH_DIRECTORY/account/$ACCOUNT_NAME.conf
     return 0
 } ## Safely read account config, ignore redundant values
-func_ssh_validity() {
-    printf "Testing keyfile..."
-    if [[ ! -f "$ACCOUNT_KEY" ]]; then
-        echo "failed"
-        echo -e "\e[100m >>> Keyfile not exist\e[0m"
-        return 1 # keyfile not exist
-    elif [[ ! -r "$ACCOUNT_KEY" ]]; then
-        echo "failed"
-        echo -e "\e[100m >>> Keyfile unreadable\e[0m"
-        return 2 # keyfile unreadable
+subfunc_server_validate() {
+    local ACCOUNT_NAME="$SERVER_ACCOUNT"
+    subfunc_account_config_read
+    subfunc_account_validate
+    func_notification 1 "Validating server '$SERVER_NAME'"
+    if [[ $? != 0 ]]; then
+        func_notification 3 "Invalid account"
+        return 1 # invalid account
+    fi
+    ssh -oBatchmode=yes $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA "screen -mSUd m7cm exit" 1>/dev/null 2>&1
+    if [[ $? != 0 ]]; then
+        func_notification 2 "GNU/Screen not found on remote host. You can ignore this if you don't want to run servers on this host, since M7CM use GNU/Screen to keep servers in background so you can reconnect to them and execute additional commands in console later."
+        func_confirmation N "Ignore it?"
+        if [[ $? != 0 ]]; then
+            return 2 # screen not found
+        fi
+    fi
+    ssh -oBatchmode=yes $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA "java -version" 1>/dev/null 2>&1
+    if [[ $? != 0 ]]; then
+        func_notification 3 "Java runtime environment not found on remote host. You can ignore this if all you need is to pull a jar from this host, but that is very, very, very rare"
+        func_confirmation N "Ignore it?"
+        if [[ $? != 0 ]]; then
+            return 3 # jre not found
+        # else 
+        #     func_notification 2 "OK we're serious now. Should that magic jar does not exist, your validation is dead end."
+        #     ssh -oBatchmode=yes $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA "cd $SERVER_DIRECTORY; test -f $SERVER_JAR"
+        #     if [[ $? != 0 ]]; then
+        #         func_notification 3 "Remote jar not exist"
+        #         return 4 # not exist jar
+        #     else
+        #         func_notification 2 "Remote jar '$SERVER_JAR' exists, "
+        #     fi
+        fi
+    fi
+    ssh -oBatchmode=yes $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA "test -d $SERVER_DIRECTORY"
+    if [[ $? != 0 ]]; then
+        func_notification 2 "Remote directory '$SERVER_DIRECTORY' does not exist. Trying to create it..."
+        ssh -oBatchmode=yes $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA "mkdir $SERVER_DIRECTORY"
+        if [[ $? != 0 ]]; then
+            func_notification 3 "Remote directory '$SERVER_DIRECTORY' can not be created."
+            return 3 # not exist and can not be created
+        else
+            func_notification 1 "Remote directory '$SERVER_DIRECTORY' created"
+        fi
     else
-        echo "success"
-        printf "Testing network connectivity..." 
-        ping -c3 -i0.4 -w0.8 "$ACCOUNT_HOST" 1>/dev/null 2>&1
-        [[ $? != 0 ]] && echo "failed" && echo -e "\e[100m >>> Host unreachable\e[0m" && return 3 # unreachable
-        echo "success"
-        printf "Testing SSH config validity..."
-        ssh "$ACCOUNT_HOST" -p "$ACCOUNT_PORT" -i "$ACCOUNT_KEY" -l "$ACCOUNT_USER" exit 
-        [[ $? != 0 ]] && echo "failed" && echo -e "\e[100m >>> Cannot connect via SSH\e[0m" && return 4 # ssh unreachable
-        echo "success"
+        ssh -oBatchmode=yes $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA "test -w $SERVER_DIRECTORY"
+        func_notification 3 "Remote directory '$SERVER_DIRECTORY' exists but not writable."
+        return 4
+    fi
+    ssh -oBatchmode=yes $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA "test -f $SERVER_DIRECTORY/$SERVER_JAR" 
+    if [[ $? != 0 ]]; then
+        func_notification 2 "Remote jar '$SERVER_JAR' not found."
+        if [[ $ENV_METHOD_FILE = 0 ]]; then
+            func_notification 3 "Neither SSH SCP or SSH SFTP found on localhost, you can not push local jar to the remote host."
+            return 5 # jar not found and can't push
+        else
+            func_notification 2 "You should push jar to this server later using '$PATH_SCRIPT jar push [jar] $SERVER_NAME'"
+        fi
+    fi
+    func_notification 1 "Validation passed"
+    SERVER_VALID=1
+    return 0
+}
+subfunc_server_config_write() {
+    if [[ -f "$PATH_DIRECTORY/server/$SERVER_NAME.conf" && ! -w "$PATH_DIRECTORY/server/$SERVER_NAME.conf" ]]; then
+        func_notification 3 "Can not write to configuration file '$SERVER_NAME.conf' due to lacking of writing permission. Check your permission"
+        return 1
+    else
+        func_notification 1 "Proceeding to write values to config file '$SERVER_NAME.conf'...."
+        echo "## Configuration for server '$SERVER_NAME', DO NOT EDIT THIS UNLESS YOU KNOW WHAT YOU ARE DOING" > "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        echo "SERVER_TAG=\"$SERVER_TAG\"" >> "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        echo "SERVER_ACCOUNT=\"$SERVER_ACCOUNT\"" >> "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        echo "SERVER_DIRECTORY=\"$SERVER_DIRECTORY\"" >> "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        echo "SERVER_PORT=\"$SERVER_PORT\"" >> "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        echo "SERVER_RAM_MAX=\"$SERVER_RAM_MAX\"" >> "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        echo "SERVER_RAM_MIN=\"$SERVER_RAM_MIN\"" >> "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        echo "SERVER_JAR=\"$SERVER_JAR\"" >> "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        echo "SERVER_EXTRA_JAVA=\"$SERVER_EXTRA_JAVA\"" >> "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        echo "SERVER_EXTRA_JAR=\"$SERVER_EXTRA_JAR\"" >> "$PATH_DIRECTORY/server/$SERVER_NAME.conf"
+        func_notification 0 "Successfully written values to config file '$ACCOUNT_NAME.conf'"
         return 0
     fi
 }
-
+subfunc_server_config_read() {
+    if [[ ! -f $PATH_DIRECTORY/server/$SERVER_NAME.conf ]]; then
+        func_notification 3 "Configuration file for server '$SERVER_NAME' not found, use '$PATH_SCRIPT server define $SERVER_NAME' to define it first."
+        return 1
+    elif [[ ! -r $PATH_DIRECTORY/server/$SERVER_NAME.conf ]]; then
+        func_notification 3 "Configuration file for server '$SERVER_NAME' not readable, check your permission"
+        return 2
+    fi
+    local IFS="="
+    while read -r NAME VALUE; do
+        case "$NAME" in
+            SERVER_TAG|SERVER_ACCOUNT|SERVER_DIRECTORY|SERVER_PORT|SERVER_RAM_MAX|SERVER_RAM_MIN|SERVER_JAR|SERVER_EXTRA_JAVA|SERVER_EXTRA_JAR)
+                eval $NAME=$VALUE
+            ;;
+            *)
+                if [[ ! -z "$VALUE" ]]; then
+                    func_notification 1 "Redundant variable '$NAME' found in configuration file '$SERVER_NAME.conf', ignored"
+                fi
+            ;;
+        esac
+    done < $PATH_DIRECTORY/account/$SERVER_NAME.conf
+    return 0
+}
+subfunc_server_status() {
+    $SERVER_SSH "screen -ls | grep -q \"$SERVER_SCREEN\""
+    return $?
+} NOT_PROGRAMED
 #### action functions, processing users' demand
 ## jar related
 action_jar_import() {
     if [[ $# -lt 2 ]]; then
         func_notification 3 "Too few arguments!"
+        func_anykey
         action_help
         return 255 # Too few arguments
     fi
@@ -569,7 +1112,7 @@ action_jar_import() {
     local JAR_NAME="$1"
     subfunc_jar_name_fix
     if [[ -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
-        func_yn N "A jar with the same name $JAR_NAME has already been defined, you will overwrite this jar file. Are you sure you want to overwrite it?"
+        func_confirmation N "A jar with the same name $JAR_NAME has already been defined, you will overwrite this jar file. Are you sure you want to overwrite it?"
         if [[ $? = 1 ]]; then
             return 1 ## Aborted overwriting
         elif [[ ! -w "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
@@ -609,8 +1152,8 @@ action_jar_import() {
             return 6
         fi
     fi
-    func_yn Y "Importing success! Do you want to auto-identify and configure it now?"
     subfunc_jar_config_write
+    func_confirmation Y "Importing success! Do you want to auto-identify and configure it now?"
     if [[ $? = 0 ]]; then
         action_jar_config $JAR_NAME "TAG = $JAR_TAG"
     else
@@ -622,6 +1165,7 @@ action_jar_import() {
 action_jar_config() {
     if [[ $# = 0 ]]; then
         func_notification 3 "Too few arguments!"
+        func_anykey
         action_help
         return 255 # Too few arguments
     fi
@@ -655,8 +1199,7 @@ action_jar_config() {
     if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
         func_notification 1 "Looks like this jar is just added to our library or its configuration file has been lost, proceeding to auto-identify it"
         subfunc_jar_identify 
-        func_notification 0 "Refreshing in 1 second..."
-        sleep 1
+        func_anykey
     fi
     ## Get jar size
     JAR_SIZE=`wc -c $PATH_DIRECTORY/jar/$JAR_NAME.jar |awk '{print $1}'`
@@ -676,15 +1219,14 @@ action_jar_config() {
         func_multilayer_expand_menu "VERSION_MC: $JAR_VERSION_MC" "The version of Minecraft this jar can host" 1 1
         func_draw_line
         echo "Type in the option you want to change and its new value split by =, i.e. 'TAG = This is my first jar!' (without quote and option is not case sensitive). You can also type 'identify' to let M7CM auto-identify it, or 'confirm' or 'save' to save thost values:"
-        read -p ">>>" COMMAND
+        read -p " >>> " COMMAND
         case "$COMMAND" in
             identify)
                 subfunc_jar_identify
                 if [[ $? = 3 ]]; then
                     return 3 ## jar broken and deleted
                 fi
-                func_notification 0 "Refreshing in 1 second..."
-                sleep 1
+                subfunc_anykey
             ;;
             confirm|save)
                 subfunc_jar_config_write
@@ -692,8 +1234,7 @@ action_jar_config() {
             ;;
             *)
                 func_jar_config "$COMMAND"
-                func_notification 0 "Refreshing in 1 second..."
-                sleep 1
+                subfunc_anykey
             ;;
         esac
     done
@@ -702,10 +1243,14 @@ action_jar_config() {
 action_jar_info() {
     if [[ $# = 0 ]]; then
         func_notification 3 "Too few arguments!"
+        func_anykey
         action_help
         return 255 # Too few arguments
     fi
     func_environment_local subfolder-jar
+    func_draw_line
+    func_print_center "Jar file information"
+    func_draw_line
     if [[ $# = 1 ]]; then
         local JAR_NAME="$1"
         subfunc_jar_name_fix
@@ -728,6 +1273,7 @@ action_jar_info() {
                 subfunc_jar_info
             fi
             shift
+            let ORDER++
         done
     fi
     return 0
@@ -735,6 +1281,9 @@ action_jar_info() {
     ## return: 0 success, 1 not exist
 action_jar_list() {
     func_environment_local subfolder-jar
+    func_draw_line
+    func_print_center "Jar file list"
+    func_draw_line
     local JAR_NAME=''
     local ORDER=1
     for JAR_NAME in $(ls $PATH_DIRECTORY/jar/*.jar); do
@@ -742,34 +1291,49 @@ action_jar_list() {
         JAR_NAME=${JAR_NAME:0:-4}
         func_multilayer_expand_menu "No.$ORDER $JAR_NAME" "" 0
         subfunc_jar_info
+        let ORDER++
     done
+    func_draw_line
     return 0
 } ## Usage: action_jar_list. NO ARGUMENTS. return: 0 success
 action_jar_remove() {
     if [[ $# = 0 ]]; then
         func_notification 3 "Too few arguments!"
+        func_anykey
         action_help
         return 255 # Too few arguments
     fi
     func_environment_local subfolder-jar
-    local JAR_NAME="$1"
-    subfunc_jar_name_fix
-    if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
-        func_notification 3 "The jar you specified does not exist!"
-        return 1 ## not exist
-    elif [[ ! -w "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
-        func_notification 3 "Removing failed due to lacking of writing permission of jar file '$JAR_NAME.jar'"
-        return 2 ## jar not writable 
-    elif [[ ! -w "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
-        func_notification 3 "Removing failed due to lacking of writing permission of configuration file '$JAR_NAME.conf'"
-        return 3 ## configuration not writable 
+    if [[ $# = 1 ]]; then
+        local JAR_NAME="$1"
+        subfunc_jar_name_fix
+        if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
+            func_notification 3 "The jar '$JAR_NAME' you specified does not exist!"
+            return 1 ## not exist
+        elif [[ ! -w "$PATH_DIRECTORY/jar/$JAR_NAME.jar" ]]; then
+            func_notification 3 "Removing failed due to lacking of writing permission of jar file '$JAR_NAME.jar'"
+            return 2 ## jar not writable 
+        elif [[ ! -w "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
+            func_notification 3 "Removing failed due to lacking of writing permission of configuration file '$JAR_NAME.conf'"
+            return 3 ## configuration not writable 
+        else
+            func_confirmation N "Are you sure you want to remove jar '$JAR_NAME' from your library?"
+            if [[ $? = 0 ]]; then
+                rm -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar"
+                rm -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" 1>/dev/null 2>&1
+                func_notification 1 "Removed jar '$JAR_NAME' from library"
+                return 0
+            else
+                return 4 ## User refused 
+            fi
+        fi
     else
-        rm -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar"
-        rm -f "$PATH_DIRECTORY/jar/$JAR_NAME.jar" 1>/dev/null 2>&1
-        echo "Removed jar '$JAR_NAME' from library"
-        return 0
+        while [[ $# > 0 ]]; do
+            action_jar_remove "$1"
+            shift
+        done
     fi
-} ## Usage: action_jar_remove [jar name]. return: 0 success, 1 not exist, 2 jar no writable, 3 conf not writable,
+} ## Usage: action_jar_remove [jar name1] [jar name2]. return: 0 success, 1 not exist, 2 jar no writable, 3 conf not writable,
 action_jar_build() {
     func_draw_line
     func_print_center "Spigot Auto-Building Function"
@@ -777,6 +1341,7 @@ action_jar_build() {
     if [[ $# -lt 2 ]]; then
         action_help
         func_notification 3 "Too few arguments!"
+        func_anykey
         return 255 # Too few arguments
     fi
     func_environment_local jre git subfolder-jar
@@ -813,24 +1378,30 @@ action_jar_build() {
             return 5 # can not overwrite existing jar
 
         else
-            func_yn N "Another jar with the same name '$JAR_NAME' has existed, would you like to overwrite it?"
+            func_confirmation N "Another jar with the same name '$JAR_NAME' has existed, would you like to overwrite it?"
             if [[ $? = 1 ]]; then
                 return 6 # user aborted overwriting
             fi
         fi
     fi
+    local REGEX='^1.[0-9]+.[0-9]+$'
     if [[ -z "$3" || "$3" = "latest" ]]; then
         local VERSION="latest"
-    elif [[ "${3:0:2}" = "1." ]]; then
-        local VERSION2
-        local VERSION3
+    elif [[ "$3" =~ ^[0-9][0-9]w[0-9][0-9][a-e]$ ]]; then
+        func_notification 2 "You are trying to build snapshot rev '$3', usually Spigot does not support Minecraft snapshot versions."
+        func_confirmation N "Continue anyway?"
+        if [[ $? = 0 ]]; then
+            return 7 ##  user aborted because of suspicious version
+        fi
+    elif [[ "$3" =~ (1.(1[0-9]|[0-9]).[0-9]|1.(1[0-9]|[0-9])) ]]; then
+        local VERSION1 VERSION2 VERSION3
         local IFS='.'
-        read -r VERSION2 VERSION3 <<< "${3:2}"
+        read -r VERSION1 VERSION2 VERSION3 <<< "$3"
         local IFS=$' \t\n'
-        if [[ "$VERSION2" -ge 8 && "$VERSION3" -le 8 ]]; then
+        if [[ "$VERSION2" -ge 8 ]] && [[ "$VERSION3" -le 8 || -z "$VERSION3" ]]; then
             local VERSION="$3"
         else
-            func_yn N "The version '$3' seems not a correct version, do you want to proceed anyway?"
+            func_confirmation N "The version '$3' seems not a correct version, do you want to proceed anyway?"
             if [[ $? = 0 ]]; then
                 local VERSION="$3"
             else
@@ -838,7 +1409,7 @@ action_jar_build() {
             fi
         fi
     else
-        func_yn N "The version '$3' seems not a correct version, do you want to proceed anyway?"
+        func_confirmation N "The version '$3' seems not a correct version, do you want to proceed anyway?"
         if [[ $? = 1 ]]; then
             local VERSION="$3"
         else
@@ -870,7 +1441,7 @@ action_jar_build() {
         rm -rf "$TMP"
         func_notification 1 "Successfully built Spigot jar '$JAR_NAME' rev '$VERSION' using Buildtools jar '$BUILDTOOL'! It's already added in your jar library."
         subfunc_jar_config_write
-        func_yn Y "Would you like to configure it now?"
+        func_confirmation Y "Would you like to configure it now?"
         if [[ $? = 0 ]]; then
             action_jar_config "$JAR_NAME" "TAG=Built at `date +"%Y-%m-%d-%k:%M"` using M7CM" "TYPE=Spigot" "PROXY=0" "VERSION=Spigot-$VERSION" "VERSION_MC=$VERSION" "BUILDTOOL=0"
         else
@@ -882,206 +1453,501 @@ action_jar_build() {
     ## Return: 0 success 1 environment error-jre 2 environment error-git, 3 buildtool not exist, 4 not a buildtool, 5 can not overwrite existing jar, 6 user aborted overwriting, 7 user aborted because of suspicious version, 8 build error,9 build failed
 ## account related
 action_account_define() {
+    if [[ $# -lt 5 ]]; then
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        action_help
+        return 255 # Too few arguments
+    fi
+    func_environment_local subfolder-account
     if [[ -f "$PATH_DIRECTORY/account/$1.conf" ]]; then
         if [[ ! -w "$PATH_DIRECTORY/account/$1.conf" ]]; then
             func_notification 3 "There's already an account with the same name '$1', and can not be overwritten due to lacking of writing permission. Check your permission"
             return 1 # can not overwrite existing account
         else
-            func_yn N "You've already defined an account with the same name '$1', are you sure you want to overwrite it?"
-            if [[ $? = 0 ]]
+            func_confirmation N "You've already defined an account with the same name '$1', are you sure you want to overwrite it?"
+            if [[ $? = 0 ]]; then
                 func_notification 1 "Proceeding to overwrite account '$1'..."
             else
                 return 2 # aborted overwriting
             fi
         fi
     fi
+    func_notification 0 "Proceeding to configuration page of account '$1' in 1 second..."
+    sleep 1
+    local ACCOUNT_NEW=1
+    action_account_config "$1" "HOST = $2" "TAG = Defined at `date +"%Y-%m-%d-%k-%M"`" "PORT = $3" "USER = $4" "KEY = $5" 
+} ## Usage: action_account_define [account name] [host] [port] [user] [key]
+    ## Return: 0 success, 1 can not overwrite existing account, 2 aborted overwriting
+action_account_config() {
+    if [[ $# = 0 ]]; then
+        action_help
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        return 255 # Too few arguments
+    fi
+    func_environment_local subfolder-account
     local ACCOUNT_NAME="$1"
+    local ACCOUNT_TAG=''
     local ACCOUNT_HOST=''
     local ACCOUNT_PORT=''
     local ACCOUNT_USER=''
     local ACCOUNT_KEY=''
-    func_account_config "HOST = $2" "PORT = $3" "USER = $4" "KEY = $5"
-    if [[ $? != 0 ]]; then
-        return 3 #illegal values and can not be fixed
-    else
-        func_notification 0 "Proceeding to configuration page of account '$ACCOUNT_NAME' in 1 second..."
-        action_account_config "$1"
-        sleep 1
-    fi
-    touch 
-    func_account_config "$ACCOUNT_NAME" 
-} ## Usage: action_account_define [account name] [host] [port] [user] [key]
-    ## Return: 0 success, 1 can not overwrite existing account, 2 aborted overwriting
-action_account_config() {
-    local ACCOUNT_NAME="$1"
-    [[ -z ""]]
-    [[ ! -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account" ]] && echo -e "\e[31mWARNING\e[0m: The account $ACCOUNT_NAME does not exist" && return 1 #invalid jar
-    subfunc_account_safely_read "$ACCOUNT_NAME"
-    func_account_config "$ACCOUNT_NAME"
-}
-func_account_config() {
-    local CHANGE
-    local OPTION
-    local VALUE
-    local IFS
-    while [[ $# > 0 ]]; do
-        local CHANGE="$1"
-        local IFS=' ='
-        read -r OPTION VALUE <<< "$CHANGE"
-        OPTION=`echo "$OPTION" | tr [a-z] [A-Z]`
-        local IFS=$' \t\n'
-        case "$OPTION" in
-            HOST)
-                if [[ -z "$VALUE" ]]; then
-                    ACCOUNT_HOST="localhost"
-                    func_notification 2 "No host specified, using default value 'localhost'"
-                else
-                    ACCOUNT_HOST="$VALUE"
-                    func_notification 0 "'HOST' set to '$VALUE'"
-                fi
-            ;;
-            USER)
-                if [[ -z "$VALUE" ]]; then
-                    ACCOUNT_USER="$USER"
-                    func_notification 2 "No user specified, using current user '$USER'"
-                else
-                    ACCOUNT_HOST="$VALUE"
-                    func_notification 0 "'USER' set to '$VALUE'"
-                fi
-            ;;
-            PORT)
-                if [[ "$VALUE" =~ $REGEX ]] && [[ "$VALUE" -ge 0 && "$VALUE" -le 65535 ]]; then
-                    ACCOUNT_PORT="$VALUE"
-                    func_notification 0 "'PORT' set to '$VALUE'"
-                elif [[ -z "$VALUE" ]]; then
-                    func_notification 2 "No port specified, using default value '22' as [port]"
-                    ACCOUNT_PORT="22"
-                else
-                    func_notification 2 "'$VALUE' is not a valid port, using default value '22' as [port]"
-                    ACCOUNT_PORT="22"
-                fi
-            ;;
-            KEY)
-                if [[ ! -f "$VALUE" ]]; then
-                    func_notification 3 "Keyfile '$VALUE' not exist"
-                    return 1 # key not readable
-                elif [[ ! -r "$VALUE" ]]; then
-                    func_notification 3 "Keyfile '$VALUE' not readable, check your permission"
-                    return 2 # not readable
-                else
-                    ACCOUNT_KEY="$VALUE"
-                    func_notification 0 "'KEY' set to '$VALUE'"
-                fi
-            ;;
-            NAME)
-                if [[ -z "$ACCOUNT_NAME" ]]; then
-                    func_notification 2 "Renaming aborted due to no account being selected"
-                elif [[ -f "$PATH_DIRECTORY/account/$VALUE.conf" ]]; then
-                    if [[ ! -w "$PATH_DIRECTORY/account/$VALUE.conf" ]]; then
-                        func_notification 2 "Renaming aborted. An account with the same name '$VALUE' has already exist and can't be overwriten due to lack of writing permission. Check your permission."
-                    else
-                        func_yn N "An account with the same name '$VALUE' has already exist, are you sure you want to overwrite it?"
-                        if [[ $? = 0 ]]; then
-                            mv -f "$PATH_DIRECTORY/account/$VALUE.conf" "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
-                            ACCOUNT_NAME="$VALUE"
-                            func_notification 0 "'NAME' set to '$VALUE'"
-                        else
-                            return 3 # abort overwriting
-                        fi
-                    fi  
-                else
-                    mv "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" "$PATH_DIRECTORY/account/$VALUE.conf" 
-                    JAR_NAME="$VALUE"
-                    ACCOUNT_NAME="$VALUE"
-                    func_notification 0 "'NAME' set to '$VALUE'"
-                fi
-            ;;
-            *)
-                func_notification 1 "'$OPTION' is not an available option, ignored"
-            ;;
-        esac
-        shift
-    done
-    return 0
-} ##
-    ## Return: 0 success, 1 key not readable
-action_account_config() {
+    local ACCOUNT_EXTRA=''
     local ACCOUNT_VALID=0
+    if [[ -z "$ACCOUNT_NEW" ]]; then
+        ## Only try to read if not from action_account_define
+        if [[ ! -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" ]]; then
+        ## Not defined in action_account_define
+            func_notification 3 "The account '$ACCOUNT_NAME' does not exist. "
+            return 1 # non-exist account
+        # elif [[ ! -r "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" ]]; then
+        #     func_notification 3 "Con '$ACCOUNT_NAME' not readable"
+        else
+            subfunc_account_config_read
+        fi
+    fi
+    if [[ ! -z "$2" ]]; then
+        func_account_config "${@:2}"
+    fi
     while true; do
         clear
         func_draw_line
-        func_print_center "Account Configuration"
+        func_print_center "Configuration for Account '$ACCOUNT_NAME'"
         func_draw_line
-        echo -e "\e[1mNAME:\e[0m $ACCOUNT_NAME"
-        echo -e "\e[1mHOST:\e[0m $ACCOUNT_HOST \e[100mYou must specify a hostname/ip, even your servers are running on the same host as M7CM\e[0m" 
-        echo -e "\e[1mPORT:\e[0m $ACCOUNT_PORT \e[100mPort of SSH\e[0m"
-        echo -e "\e[1mUSER:\e[0m $ACCOUNT_USER \e[100mUse this account to connect the remote host\e[0m"
-        echo -e "\e[1mKEY:\e[0m $ACCOUNT_KEY \e[100mPrivate key to SSH, absolute path\e[0m"
-        printf "\n\e[1mVALIDITY:\e[0m "
-        [[ $ACCOUNT_VALID = 0 ]] && echo -e "\e[41mINVALID\e[0m"
-        [[ $ACCOUNT_VALID = 1 ]] && echo -e "\e[42mVALID\e[0m"
+        func_multilayer_expand_menu "NAME: $ACCOUNT_NAME" "" 0
+        func_multilayer_expand_menu "TAG: $ACCOUNT_TAG" "Just for memo"
+        func_multilayer_expand_menu "HOST: $ACCOUNT_HOST" "Can be domain or ip, i.e. mc.mydomain.com, or 33.33.33.33. Default: localhost"
+        func_multilayer_expand_menu "PORT: $ACCOUNT_PORT" "Interger, 0-65535. Default: 22"
+        func_multilayer_expand_menu "USER: $ACCOUNT_USER" "User name will be used to login. Default: current user('$USER')"
+        func_multilayer_expand_menu "KEY: $ACCOUNT_KEY" "Private key file used to login"
+        if [[ -z "$ACCOUNT_EXTRA" ]]; then
+            func_multilayer_expand_menu "EXTRA: $ACCOUNT_EXTRA" "Extra arguments used for SSH. DO NOT EDIT THIS if you don't know what you are doing" 1 1
+        else
+            func_multilayer_expand_menu "EXTRA: $ACCOUNT_EXTRA" "Extra arguments used for SSH." 1 1
+        fi
         func_draw_line
-        echo -e "\e[4mType in the option you want to change and the new value split by =, i.e.PORT=2222, or KEY=/home/mcManager/keys/server1.key\nYou can also type 'validate' to let M7CM identify it, or 'confirm' to confirm these values\e[0m"
+        func_notification 1 "Current SSH command: 'ssh $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA'"
+        func_draw_line
+        if [[ $ACCOUNT_VALID = 1 ]]; then
+            func_notification 1 "This account is valid √ " "You can type 'save' or 'confirm' to save it now"
+        elif [[ $ACCOUNT_VALID = 0 ]]; then
+            func_notification 1 "This account is invalid X " "Type 'validate' to validate it first"
+        fi
+        func_draw_line
+        echo "Type in the option you want to change and its new value split by =, i.e. 'PORT = 22' (without quote and option is not case sensitive)."
         read -p ">>>" COMMAND
         case "$COMMAND" in
             validate)
-                func_ssh_validity
-                [[ $? = 0 ]] && ACCOUNT_VALID=1
-                read -n 1 -s -r -p "Press any key to continue..."
+                subfunc_account_validate
             ;;
-            confirm)
-                if [[ $ACCOUNT_VALID = 0 ]]; then
-                    echo -e "\e[31mWARNING\e[0m: \e[5m\e[1mYou must validate this account first \e[0m\c"
-                    read -n 1 -s -r -p "Press any key to continue..."
-                else
-                    echo "Proceeding to write values to config file...."
-                    echo "## Configuration for account $ACCOUNT_NAME, DO NOT EDIT THIS UNLESS YOU KNOW WHAT YOU ARE DOING" > "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
-                    echo "ACCOUNT_HOST=\"$ACCOUNT_HOST\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
-                    echo "ACCOUNT_PORT=\"$ACCOUNT_PORT\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
-                    echo "ACCOUNT_USER=\"$ACCOUNT_USER\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
-                    echo "ACCOUNT_KEY=\"$ACCOUNT_KEY\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
+            confirm|save)
+               if [[ $ACCOUNT_VALID = 1 ]]; then
+                    subfunc_account_config_write
                     return 0
+                elif [[ $ACCOUNT_VALID = 0 ]]; then
+                    func_notification 3 "This account is invalid" "You must use 'validate' to validate it first"
                 fi
             ;;
             *)
-                local OPTION=''
-                local VALUE=''
-                IFS='=' read -r OPTION VALUE <<< "$COMMAND"
+                func_account_config "$COMMAND"
                 ACCOUNT_VALID=0
-                case "$OPTION" in
-                    HOST|PORT|USER|KEY)
-                        eval ACCOUNT_$OPTION="$VALUE"
-                    ;;
-                    NAME)
-                        "$VALUE"
-                        if [[ -f "$PATH_DIRECTORY/account/$VALUE.account" ]]; then
-                            echo "\e[31mWARNING\e[0m: \e[1mA An account with the same name has already exist, renaming aborted. \e[0m\c"
-                            read -n 1 -s -r -p "Press any key to continue..."
-                        elif [[ -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account" ]]; then
-                            mv "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account" "$PATH_DIRECTORY/account/$VALUE.account"
-                            ACCOUNT_NAME=$VALUE
-                        fi
-                    ;;
-                    *)
-                        echo -e "\e[31mWARNING\e[0m: \e[5m\e[1mInput not recognized! \e[0m\c"
-                        read -n 1 -s -r -p "Press any key to continue..."
-                    ;;
-                esac
             ;;
         esac
+        func_anykey
     done
+} ## Usage: action_account_config [account name] [option1=value1] [option2=value2] ...
+action_account_info() {
+    if [[ $# = 0 ]]; then
+        action_help
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        return 255 # Too few arguments
+    fi
+    func_environment_local subfolder-account
+    func_draw_line
+    func_print_center "Account information"
+    func_draw_line
+    if [[ $# = 1 ]]; then
+        func_multilayer_expand_menu "NAME: $1" "" 0
+        local ACCOUNT_NAME="$1"
+        if [[ ! -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" ]]; then
+            func_notification 3 "This account does not exist"
+            return 1 # not exist
+        else
+            subfunc_account_info
+        fi
+    else
+        local ORDER=1
+        while [[ $# > 0 ]]; do
+            local ACCOUNT_NAME="$1"
+            if [[ ! -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" ]]; then
+                func_notification 3 "The jar file '$ACCOUNT_NAME' does not exist"
+            else
+                subfunc_account_config_read
+                func_multilayer_expand_menu "No.$ORDER $ACCOUNT_NAME" "" 0
+                subfunc_account_info
+                let ORDER++
+            fi
+            shift
+        done
+    fi
+    func_draw_line
+    return 0
 }
-# action_account_remove() {
-    
-# }
+action_account_list() {
+    func_draw_line
+    func_print_center "Account list"
+    func_draw_line
+    func_environment_local subfolder-account
+    local ACCOUNT_NAME=''
+    local ORDER=1
+    for ACCOUNT_NAME in $(ls $PATH_DIRECTORY/account/*.conf); do
+        ACCOUNT_NAME=$(basename $ACCOUNT_NAME)
+        ACCOUNT_NAME=${ACCOUNT_NAME:0:-5}
+        func_multilayer_expand_menu "No.$ORDER $ACCOUNT_NAME" "" 0
+        local ACCOUNT_LIST=1
+        subfunc_account_info
+        let ORDER++
+    done
+    func_draw_line
+    return 0
+}
+action_account_remove() {
+    if [[ $# = 0 ]]; then
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        action_help
+        return 255 # Too few arguments
+    fi
+    func_environment_local subfolder-account
+    if [[ $# = 1 ]]; then
+        if [[ ! -f "$PATH_DIRECTORY/account/$1.conf" ]]; then
+            func_notification 3 "The account '$1' you specified does not exist!"
+            return 1 ## not exist
+        elif [[ ! -w "$PATH_DIRECTORY/account/$1.conf" ]]; then
+            func_notification 3 "Removing failed due to lacking of writing permission of configuration file '$1.conf'"
+            return 2 ## jar not writable 
+        else
+            func_confirmation N "Are you sure you want to remove account '$1' from your library?"
+            if [[ $? = 0 ]]; then
+                rm -f "$PATH_DIRECTORY/account/$1.conf"
+                func_notification 1 "Removed jar '$1' from library"
+                return 0
+            else
+                return 3 ## User refused 
+            fi
+        fi
+    else
+        while [[ $# > 0 ]]; do
+            action_account_remove "$1"
+            shift
+        done
+    fi
+}
+action_server_define() {
+    if [[ $# -lt 5 ]]; then
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        action_help
+        return 255 # Too few arguments
+    fi
+    func_environment_local subfolder-server
+    local SERVER_NAME="$1"
+    if [[ -f "$PATH_DIRECTORY/server/$SERVER_NAME.conf" ]]; then
+        if [[ -w "$PATH_DIRECTORY/server/$SERVER_NAME.conf" ]]; then
+            func_notification 3 "There's already a server with the same name '$SERVER_NAME' and can not be overwritten due to lacking of writing permission to file '$SERVER_NAME.conf'"
+            return 1 # duplication and not want to overwrite
+        else
+            func_notification 2 "There's already a server with the same name '$SERVER_NAME'"
+            func_confirmation N "Are you sure you want to overwrite it?" 
+            if [[ $? != 0 ]]; then
+                return 2 # user give up
+            fi
+        fi
+    fi
+    local SERVER_TAG="Added at `date +"%Y-%m-%d-%k:%M"`"
+    action_server_config "$SERVER_NAME" "ACCOUNT = $2" "DIRECTORY = $3" "PORT= $4" "RAM_MAX = $5" "RAM_MIN = $6" "JAR = $7" "EXTRA_JAVA = $8" "EXTRA_JAR = $9"
+    if [[ $? = 0 ]]; then
+        func_notification 1 "Successfully added server '$SERVER_NAME'"
+    else
+        func_notification 3 "Failed to add server '$SERVER_NAME'"
+        return 3 # failed
+    fi
+} ## Usage: action_server_define [server] [account] [directory] [port] [max ram] [min ram] [remote jar] [java extra arguments] [jar extra arguments]
+action_server_config() {
+    if [[ $# = 0 ]]; then
+        action_help
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        return 255 # Too few arguments
+    fi
+    func_environment_local subfolder-server
+    local SERVER_NAME="$1"
+    local SERVER_TAG
+    local SERVER_DIRECTORY
+    local SERVER_PORT
+    local SERVER_RAM_MAX
+    local SERVER_RAM_MIN
+    local SERVER_JAR
+    local SERVER_EXTRA_JAVA
+    local SERVER_EXTRA_JAR
+    local SERVER_VALID=0
+    if [[ -z "$SERVER_NEW" ]]; then
+        ## Only try to read if not from action_account_define
+        if [[ ! -f "$PATH_DIRECTORY/server/$SERVER_NAME.conf" ]]; then
+        ## Not defined in action_account_define
+            func_notification 3 "The server '$SERVER_NAME' does not exist"
+            return 1 # non-exist account
+        else
+            subfunc_account_config_read
+        fi
+    fi
+    if [[ ! -z "$2" ]]; then
+        func_server_config "${@:2}"
+    fi
+    while true; do
+        clear
+        func_draw_line
+        func_print_center "Configuration for Server '$SERVER_NAME'"
+        func_draw_line
+        func_multilayer_expand_menu "NAME: $SERVER_NAME" "" 0
+        func_multilayer_expand_menu "TAG: $SERVER_TAG" 
+        func_multilayer_expand_menu "DIRECTORY: $SERVER_DIRECTORY" "Remote working directory. Default: ~"
+        func_multilayer_expand_menu "PORT: $SERVER_PORT" "Interger. Default: 25565"
+        func_multilayer_expand_menu "RAM_MAX: $SERVER_RAM_MAX" "Interger+M/G, i.e. 1024M. Default:1G, not less than RAM_MIN"
+        func_multilayer_expand_menu "RAM_MIN: $SERVER_RAM_MIN" "Interger+M/G, i.e. 1024M. Default:1G, not greater than RAM_MAX"
+        func_multilayer_expand_menu "JAR: $SERVER_RAM_MIN" "Remote server jar file with file extention. Can be absolute path. Default: server.jar"
+        if [[ -z "$SERVER_EXTRA_JAVA" ]]; then
+            func_multilayer_expand_menu "EXTRA_JAVA: $SERVER_EXTRA_JAVA" "Extra arguments for java, i.e. -XX:+UseG1GC. Usually you don't need this"
+        else
+            func_multilayer_expand_menu "EXTRA_JAVA: $SERVER_EXTRA_JAVA"
+        fi
+        if [[ -z "$SERVER_EXTRA_JAR" ]]; then
+            func_multilayer_expand_menu "EXTRA_JAR: $SERVER_EXTRA_JAR" "Extra arguments for the jar itself, i.e. used for SSH. DO NOT EDIT THIS if you don't know what you are doing" 1 1
+        else
+            func_multilayer_expand_menu "EXTRA: $SERVER_EXTRA" "Extra arguments used for SSH." 1 1
+        fi
+        func_draw_line
+        func_notification 1 "Current startup command: 'java -Xmx$SERVER_RAM_MAX -Xms$SERVER_RAM_MIN $SERVER_EXTRA_JAVA -jar $SERVER_JAR nogui --port $SERVER_PORT $SERVER_EXTRA_JAR'"
+        func_draw_line
+        if [[ $ACCOUNT_VALID = 1 ]]; then
+            func_notification 1 "This server is valid √ " "You can type 'save' or 'confirm' to save it now"
+        elif [[ $ACCOUNT_VALID = 0 ]]; then
+            func_notification 1 "This server is invalid X " "Type 'validate' to validate it first"
+        fi
+        func_draw_line
+        echo "Type in the option you want to change and its new value split by =, i.e. 'PORT = 25565' (without quote and option is not case sensitive)."
+        read -p ">>>" COMMAND
+        case "$COMMAND" in
+            validate)
+                subfunc_server_validate
+            ;;
+            confirm|save)
+               if [[ $SERVER_VALID = 1 ]]; then
+                    subfunc_server_config_write
+                    return 0
+                elif [[ $ACCOUNT_VALID = 0 ]]; then
+                    func_notification 3 "This server is invalid" "You must use 'validate' to validate it first"
+                fi
+            ;;
+            *)
+                func_account_config "$COMMAND"
+                SERVER_VALID=0
+            ;;
+        esac
+        func_anykey
+    done
+} 
+action_server_remove() {
+    if [[ $# = 0 ]]; then
+        action_help
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        return 255 # Too few arguments
+    fi
+    if [[ $# = 1 ]]; then
+        if [[ ! -f "$PATH_DIRECTORY/server/$1.conf" ]]; then
+            func_notification 3 "The server '$1' you specified does not exist!"
+            return 1 ## not exist
+        elif [[ ! -w "$PATH_DIRECTORY/server/$1.conf" ]]; then
+            func_notification 3 "Removing failed due to lacking of writing permission of configuration file '$1.conf'"
+            return 2 ## jar not writable 
+        else
+            func_confirmation N "Are you sure you want to remove server '$1' from your library?"
+            if [[ $? = 0 ]]; then
+                action_server_stop "$1"
+                rm -f "$PATH_DIRECTORY/server/$1.conf"
+                func_notification 1 "Removed server '$1' from library"
+                return 0
+            else
+                return 3 ## User refused 
+            fi
+        fi
+    else
+        while [[ $# > 0 ]]; do
+            action_server_remove "$1"
+            shift
+        done
+    fi
+}
+action_server_info() {
+
+}
+action_server_list() {
+
+}
+action_server_start() {
+    if [[ $# = 0 ]]; then
+        action_help
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        return 255 # Too few arguments
+    fi
+    if [[ $# = 1 ]]; then
+        if [[ ! -f "$PATH_DIRECTORY/server/$1.conf" ]]; then
+            func_notification 3 "The server '$1' you specified does not exist!"
+            return 1 ## not exist
+        elif [[ ! -r "$PATH_DIRECTORY/server/$1.conf" ]]; then
+            func_notification 3 "Configuration file for server '$1' not readable, check your permission"
+            return 2
+        else
+            local SERVER_NAME="$1"
+            local SERVER_ACCOUNT
+            local SERVER_DIRECTORY
+            local SERVER_PORT
+            local SERVER_RAM_MAX
+            local SERVER_RAM_MIN
+            local SERVER_JAR
+            local SERVER_EXTRA_JAVA
+            local SERVER_EXTRA_JAR
+            subfunc_server_config_read
+            local ACCOUNT_NAME="$SERVER_ACCOUNT"
+            local ACCOUNT_HOST
+            local ACCOUNT_PORT
+            local ACCOUNT_USER
+            local ACCOUNT_KEY
+            local ACCOUNT_EXTRA
+            subfunc_account_config_read
+            local SERVER_SSH="ssh $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA"
+            local SERVER_SCREEN="M7CM-server-$SERVER_ACCOUNT-$SERVER_NAME-$SERVER_JAR-on-$SERVER_PORT"
+            $SERVER_SSH "screen -ls | grep -q \"$SERVER_SCREEN\""
+            if [[ $? = 0 ]]; then
+                func_notification 3 "Server '$SERVER_NAME' is already running, failed to start it"
+                return 3
+            else
+                local SERVER_JAVA="java -Xmx$SERVER_RAM_MAX -Xms$SERVER_RAM_MIN $SERVER_EXTRA_JAVA -jar $SERVER_JAR nogui --port $SERVER_PORT $SERVER_EXTRA_JAR"
+                $SERVER_SSH "screen -mSUd \"$SERVER_SCREEN\" \"$SERVER_JAVA\""
+                func_notification 1 "Started server '$SERVER_NAME'"
+                return 0
+            fi
+        fi
+    else
+        while [[ $# > 0 ]]; do
+            action_server_remove "$1"
+            shift
+        done
+    fi
+} 
+action_server_stop() {
+    if [[ $# = 0 ]]; then
+        action_help
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        return 255 # Too few arguments
+    fi
+    if [[ $# = 1 ]]; then
+        if [[ ! -f "$PATH_DIRECTORY/server/$1.conf" ]]; then
+            func_notification 3 "The server '$1' you specified does not exist!"
+            return 1 ## not exist
+        elif [[ ! -r "$PATH_DIRECTORY/server/$1.conf" ]]; then
+            func_notification 3 "Configuration file for server '$1' not readable, check your permission"
+            return 2
+        else
+            local SERVER_NAME="$1"
+            local SERVER_ACCOUNT
+            local SERVER_DIRECTORY
+            local SERVER_PORT
+            local SERVER_RAM_MAX
+            local SERVER_RAM_MIN
+            local SERVER_JAR
+            local SERVER_EXTRA_JAVA
+            local SERVER_EXTRA_JAR
+            subfunc_server_config_read
+            local ACCOUNT_NAME="$SERVER_ACCOUNT"
+            local ACCOUNT_HOST
+            local ACCOUNT_PORT
+            local ACCOUNT_USER
+            local ACCOUNT_KEY
+            local ACCOUNT_EXTRA
+            subfunc_account_config_read
+            local SERVER_SSH="ssh $ACCOUNT_HOST -p $ACCOUNT_PORT -l $ACCOUNT_USER -i $ACCOUNT_KEY $ACCOUNT_EXTRA"
+            local SERVER_SCREEN="M7CM-server-$SERVER_ACCOUNT-$SERVER_NAME-$SERVER_JAR-on-$SERVER_PORT"
+            $SERVER_SSH "screen -ls | grep -q \"$SERVER_SCREEN\""
+            if [[ $? = 1 ]]; then
+                func_notification 3 "Server '$SERVER_NAME' is not running, no need to stop it"
+                return 3
+            else
+                $SERVER_SSH "screen -rXd \"$SERVER_SCREEN\" stuff \"^Mend^Mexit^M\""
+                func_notification 1 "Issued stop command(end/exit) to '$SERVER_NAME'"
+                func_notification 1 "Checking if server is correctly stopped in 3 seconds... "
+                sleep 3
+                $SERVER_SSH "screen -ls | grep -q \"$SERVER_SCREEN\""
+                if [[ $? = 0 ]]; then
+                    func_notification 2 "Server not stopped in 3 seconds"
+                $SERVER_SSH "screen -mSUd \"$SERVER_SCREEN\" \"$SERVER_JAVA\""
+                func_notification 1 "Stopped server '$SERVER_NAME'"
+                return 0
+
+
+                local TMP=$(screen -ls | grep "$SSERVER_SCREEN" | awk '{print $1}')
+                local TMP_PID
+                local TMP_NAME
+                local IFS='.'
+                read -r TMP_PID TMP_NAME <<< "$TMP"
+                ##########################################
+                ###########################################
+                ######### NOT FINISHED
+
+            fi
+        fi
+    else
+        while [[ $# > 0 ]]; do
+            action_server_remove "$1"
+            shift
+        done
+    fi
+} NOT_PROGRAMED
+action_server_restart() {
+    if [[ $# = 0 ]]; then
+        action_help
+        func_notification 3 "Too few arguments!"
+        func_anykey
+        return 255 # Too few arguments
+    fi
+    if [[ $# = 1 ]]; then
+        if [[ ! -f "$PATH_DIRECTORY/server/$1.conf" ]]; then
+            func_notification 3 "The server '$1' you specified does not exist!"
+            return 1 ## not exist
+        else
+            action_server_stop "$1"
+            action_server_start "$1"
+        fi
+    else
+        while [[ $# > 0 ]]; do
+            action_server_remove "$1"
+            shift
+        done
+    fi
+} 
 action_help() {
     func_draw_line
     func_print_center "Command Help for Minecraft 7 Command-line Manager"
     func_draw_line
     func_multilayer_expand_menu "$PATH_SCRIPT" "" 0
     func_multilayer_expand_menu "help" "print this help message" 
-    func_multilayer_expand_menu "define [server] [account] [jar] [user] [directory] [max ram] [min ram]" "(re)define a server so M7CM can manage it." 
-    func_multilayer_expand_menu "config [server] [option] [value]" "change one specific option you defined by $PATH_SCRIPT define" 
+    func_multilayer_expand_menu "define [server] [account] ([directory] [port] [max ram] [min ram] [remote jar])" "(re)define a server so M7CM can manage it." 
+    func_multilayer_expand_menu "config [server] ([option1=value1] [option2=value2]" "change one specific option you defined by $PATH_SCRIPT define" 
     func_multilayer_expand_menu "start [server1] [server2] ..." "start one or multiple pre-defined servers" 
     func_multilayer_expand_menu "stop [server1] [server2] ..." "stop one or multiple pre-defined servers" 
     func_multilayer_expand_menu "restart [server1] [server2] ..." 
@@ -1090,6 +1956,7 @@ action_help() {
     func_multilayer_expand_menu "send [server] [command]" "send a command" 
     func_multilayer_expand_menu "remove [server]"
     func_multilayer_expand_menu "status [server]"
+    ## group related commands
     func_multilayer_expand_menu "group [sub action]" "group related action. m7cm have a reserverd group _ALL_ for all servers you defined"
     func_multilayer_expand_menu "define [group] [server1] [server2] ..." "(re)define a group" 2
     func_multilayer_expand_menu "start [group]" "" 2
@@ -1099,22 +1966,28 @@ action_help() {
     func_multilayer_expand_menu "delete [group]" "just remove the group itself, keep servers" 2
     func_multilayer_expand_menu "push [group] [jar]" "push the given jar to all servers in group" 2
     func_multilayer_expand_menu "status [group]" "list all servers' status in the given group" 2 1
+    ## jar related command
     func_multilayer_expand_menu "jar [sub action]" "jar-related commands, [jar] does not incluede the .jar suffix"
     func_multilayer_expand_menu "import [jar] [link/path]" "import a jar from an online source or local disk, you need GNU/Wget to download the jar" 2
     func_multilayer_expand_menu "push [jar] [server]" "push the given jar to this server" 2
     func_multilayer_expand_menu "pull [jar] [server] [remote jar]" "pull the remote jar, use fullname" 2
-    func_multilayer_expand_menu "config [jar] ([option1=value1] [option2=value2] ...)" "change the given configuration of the jar and bring you to configuration terminal-UI" 2
+    func_multilayer_expand_menu "config [jar] ([option1=value1] [option2=value2] ...)" "" 2
     func_multilayer_expand_menu "build [jar] [buildtool-jar] ([version])" "build a jar file of the given version using spigot buildtool, you need to import or download the buildtool first" 2
-    func_multilayer_expand_menu "remove [jar name]" "remove a jar and this configuration" 2
+    func_multilayer_expand_menu "remove [jar1] [jar2] ..." "remove a jar and this configuration" 2
     func_multilayer_expand_menu "info [jar1] [jar2] ..." "check the configuration of the jar file" 2
     func_multilayer_expand_menu "list" "lsit all jar files and their configuration" 2 1
+    ## account related command
     func_multilayer_expand_menu "account [sub action]" "" 1 1
-    func_multilayer_expand_menu "define [account] [hostname/ip] [ssh port] [user] [private key]" "" 2 "" 1
-    func_multilayer_expand_menu "config [account]" "" 2 "" 1
-    func_multilayer_expand_menu "remove [account]" "" 2 1 1
+    func_multilayer_expand_menu "define [account] [hostname/ip] [ssh port] [user] [private key]" "" 2 0 1
+    func_multilayer_expand_menu "config [account] ([option1=value1] [option2=value2] ...)" "" 2 0 1
+    func_multilayer_expand_menu "remove [account1] [account2] ..." "" 2 0 1
+    func_multilayer_expand_menu "info [account1] [account2] ..." "" 2 0 1
+    func_multilayer_expand_menu "list" "" 2 1 1
     func_draw_line
     func_notification 0 "Any [account] used by a server must have been pre-defined by '$PATH_SCRIPT account define', M7CM will use SSH to connect to this host and perform management. Even if you want to run and manage servers on the same host as M7CM, you still need to use SSH to ensure both the isolation and the security. Notice that the [account] here is just for easy memorizing, and does not have to be the same as [user]"
-    func_notification 0 "Any [jar] used by a server must have been pre-imported by '$PATH_SCRIPT import', or you can use remote:[full name with file extension] to refer to a jar file in the directory of the server (will be renamed to server.jar and import into jar library with the same name of the server then)"
+    func_notification 0 "The [remote jar] defined in a server is the remote jar's full name with file extension. But the [jar] defined in jar-related actions is a simple name for memo, without file extension (though M7CM can auto-remove it if you accidently add '.jar')"
+    func_notification 1 "It's strongly recommended to use simple alphabet name for [server], [group] [account] and [jar], any extra suffix may result in unexpected accidents"
+    ##func_notification 0 "Any [jar] used by a server must have been pre-imported by '$PATH_SCRIPT import', or you can use '_REMOTE_' to let M7CM use the remote jar, if so, you must define [remote jar] with its full name. refer to a jar file in the directory of the server (will be renamed to server.jar and import into jar library with the same name of the server then)"
     func_notification 0 "M7CM has a reserverd server '_LAST_' refering to the last server you've successfully managed and also a reserverd group '_LAST_'. there's also a reserverd group named '_ALL_' refering to all servers"
     func_notification 0 "To build a spigot jar using a spigot buildtool, you need import a buildtool first, configure it to be recognized as a buildtool, and got jre and git installed."
     func_draw_line
@@ -1128,121 +2001,121 @@ action_version() {
     func_draw_line
     return 0
 }
-main() {
-    func_environment_check_pre_run
-    [[ $# = 0 ]] && action_help && exit
-    case "$1" in 
-        define)
-            echo "defining"
-        ;;
-        config)
-            echo "configing"
-        ;;
-        browse)
-            echo "browsing"
-        ;;
-        start)
-            echo "starting"
-        ;;
-        stop)
-            echo "stopping"
-        ;;
-        restart)
-            echo "restarting"
-        ;;
-        console)
-            echo "to console"
-        ;;
-        send)
-            echo "send command"
-        ;;
-        remove)
-            echo "removing server"
-        ;;
-        status)
-            echo "checking status"
-        ;;
-        group)
-            shift
-            #group related actions
-            case "$2" in
-                define)
-                    #define a group
-                ;;
-                start)
-                    #start a group
-                ;;
-                stop)
-                    #stop a group
-                ;;
-                restart)
-                    #restart a group
-                ;;
-                remove)
-                    #remove a group
-                ;;
-                info)
-                    #info of a group
-                ;;
-                list)
-                    #list all groups
-                ;;
-            esac
-        ;;
-        jar)
-            #jar related actions
-            case "$2" in 
-                import)
-                    #import a local jar
-                    action_jar_import "${@:3}"
-                ;;
-                push)
-                    echo "UNDER PROGRAMMING"
-                    #push a jar to a server
-                    action_jar_push "${@:3}"
-                ;;
-                pull)
-                    echo "UNDER PROGRAMMING"
-                    #pull a jar from a server
-                    action_jar_pull "${@:3}"
-                ;;
-                config)
-                    action_jar_config "${@:3}"
-                ;;
-                build)
-                    action_jar_build "${@:3}"
-                ;;
-                remove)
-                    action_jar_remove "${@:3}"
-                ;;
-                info)
-                    action_jar_info "${@:3}"
-                ;;
-                list)
-                    action_jar_list 
-                ;;
-                *)
-                    action_help
-                    return 1 #Unrecognized
-                ;;
-            esac
-        ;;
-        account)
-            #account related actions
-            case "$2" in
-                define)
-                    action_account_define "${@:3}"
-                ;;
-                config)
-                    action_account_config "${@:3}"
-                ;;
-                remove)
-                    action_account_remove "${@:3}"
-                ;;
-            esac
-        *)
-            action_help && return
-        ;;
-    esac
-}
-main && exit
+# main() {
+#     func_environment_check_pre_run
+#     [[ $# = 0 ]] && action_help && exit
+#     case "$1" in 
+#         define)
+#             echo "defining"
+#         ;;
+#         config)
+#             echo "configing"
+#         ;;
+#         browse)
+#             echo "browsing"
+#         ;;
+#         start)
+#             echo "starting"
+#         ;;
+#         stop)
+#             echo "stopping"
+#         ;;
+#         restart)
+#             echo "restarting"
+#         ;;
+#         console)
+#             echo "to console"
+#         ;;
+#         send)
+#             echo "send command"
+#         ;;
+#         remove)
+#             echo "removing server"
+#         ;;
+#         status)
+#             echo "checking status"
+#         ;;
+#         group)
+#             shift
+#             #group related actions
+#             case "$2" in
+#                 define)
+#                     #define a group
+#                 ;;
+#                 start)
+#                     #start a group
+#                 ;;
+#                 stop)
+#                     #stop a group
+#                 ;;
+#                 restart)
+#                     #restart a group
+#                 ;;
+#                 remove)
+#                     #remove a group
+#                 ;;
+#                 info)
+#                     #info of a group
+#                 ;;
+#                 list)
+#                     #list all groups
+#                 ;;
+#             esac
+#         ;;
+#         jar)
+#             #jar related actions
+#             case "$2" in 
+#                 import)
+#                     #import a local jar
+#                     action_jar_import "${@:3}"
+#                 ;;
+#                 push)
+#                     echo "UNDER PROGRAMMING"
+#                     #push a jar to a server
+#                     action_jar_push "${@:3}"
+#                 ;;
+#                 pull)
+#                     echo "UNDER PROGRAMMING"
+#                     #pull a jar from a server
+#                     action_jar_pull "${@:3}"
+#                 ;;
+#                 config)
+#                     action_jar_config "${@:3}"
+#                 ;;
+#                 build)
+#                     action_jar_build "${@:3}"
+#                 ;;
+#                 remove)
+#                     action_jar_remove "${@:3}"
+#                 ;;
+#                 info)
+#                     action_jar_info "${@:3}"
+#                 ;;
+#                 list)
+#                     action_jar_list 
+#                 ;;
+#                 *)
+#                     action_help
+#                     return 1 #Unrecognized
+#                 ;;
+#             esac
+#         ;;
+#         account)
+#             #account related actions
+#             case "$2" in
+#                 define)
+#                     action_account_define "${@:3}"
+#                 ;;
+#                 config)
+#                     action_account_config "${@:3}"
+#                 ;;
+#                 remove)
+#                     action_account_remove "${@:3}"
+#                 ;;
+#             esac
+#         *)
+#             action_help && return
+#         ;;
+#     esac
+# }
+# main && exit
