@@ -43,6 +43,8 @@ JAR_SIZE=0
 ## subfunc: do not accept arguments, can only be used in other funtions
 ## action: every "action" users can do, i.e. start a server, define a group, etc
 ## Universal return value: 255 for too few arguments
+
+#### universal functions
 func_draw_line() {
     ## Usage: func_draw_line [symbol] [length] [not break]
     if [[ -z "$1" ]]; then
@@ -252,6 +254,8 @@ func_yn() {
         fi
     done
 } ## Usage: func_yn [default option, Y/N] [content], return: 0 for yes, 1 for no, 255 for wrong yn
+
+#### specified functions
 func_jar_config() {
     local CHANGE
     local OPTION
@@ -259,23 +263,24 @@ func_jar_config() {
     local IFS
     while [[ $# > 0 ]]; do
         local CHANGE="$1"
-        local IFS='='
+        local IFS=' ='
         read -r OPTION VALUE <<< "$CHANGE"
-        local IFS
+        OPTION=`echo "$OPTION" | tr [a-z] [A-Z]`
+        local IFS=$' \t\n'
         case "$OPTION" in
             TAG|TYPE|VERSION|VERSION_MC)
                 eval JAR_$OPTION=\"$VALUE\"
-                func_notification 0 "Option '$OPTION' is changed to '$VALUE'"
+                func_notification 0 "'$OPTION' set to '$VALUE'"
             ;;
             PROXY|BUILDTOOL)
                 if [[ "$VALUE" = "0" ]]; then
                     eval JAR_$OPTION=0
-                    func_notification 0 "Option '$OPTION' is changed to 0"
+                    func_notification 0 "'$OPTION' set to 0"
                 elif [[ "$VALUE" = "1" ]]; then
                     eval JAR_$OPTION=1
-                    func_notification 1 "Option '$OPTION' is changed to 1"
+                    func_notification 1 "'$OPTION' set to 1"
                 else 
-                    func_notification 2 "Invalid value '$VALUE' for option '$OPTION', ignored. Accedpt: 0, 1"
+                    func_notification 2 "Invalid value '$VALUE' for '$OPTION', ignored. Accedpting: 0, 1"
                 fi
             ;;
             NAME)
@@ -291,25 +296,38 @@ func_jar_config() {
                             rm -f "$PATH_DIRECTORY/jar/$VALUE.conf" 1>/dev/null 2>&1
                             mv -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" "$PATH_DIRECTORY/jar/$VALUE.conf" 1>/dev/null 2>&1
                             JAR_NAME="$VALUE"
-                            func_notification 0 "Option NAME is changed to '$VALUE'"
+                            func_notification 0 "'NAME' set to '$VALUE'"
                         fi
                     fi  
                 else
                     mv "$PATH_DIRECTORY/jar/$JAR_NAME.jar" "$PATH_DIRECTORY/jar/$VALUE.jar"
                     mv -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" "$PATH_DIRECTORY/jar/$VALUE.conf" 1>/dev/null 2>&1
                     JAR_NAME="$VALUE"
-                    func_notification 0 "Option NAME is changed to '$VALUE'"
+                    func_notification 0 "'NAME' set to '$VALUE'"
                 fi
             ;;
             *)
-                func_notification 1 "Option '$OPTION' not exist or not available to change, ignored"
+                func_notification 1 "'$OPTION' is not an available option, ignored"
             ;;
         esac
         shift
     done
-    local IFS='='
     return 0
 } ## Usage: func_jar_config [option1=value1]   [option2=value2]
+
+#### sub functions, without arguments
+###### jar related
+subfunc_jar_name_fix() {
+    while true; do
+        local TMP=`echo "${JAR_NAME: -4}" | tr [A-Z] [a-z]`
+        if [[ "$TMP" = ".jar" ]]; then
+            echo "You jar name has redundant .jar suffix and has been automatically cut"
+            JAR_NAME="${JAR_NAME:0:-4}"
+        else
+            return 0
+        fi
+    done
+} ## Fix jar name, cut out .jar extension
 subfunc_jar_identify() {
     echo "Auto-identifying jar information for JAR '$JAR_NAME'..." 
     if [[ ENV_JRE = 0 ]]; then
@@ -372,12 +390,14 @@ subfunc_jar_identify() {
         elif [[ $RETURN = 1 ]]; then
             if [[ "$JAR_VERSION" =~ "BuildTools" ]]; then
                 echo "Looks like it contains Spigot BuildTools"
-                echo "Sweet! You can build a spigot jar using $PATH_SCRIPT jar build [jar] $JAR_NAME [version]!"
+                echo "Sweet! You can build a spigot jar using '$PATH_SCRIPT jar build [jar] $JAR_NAME [version]'!"
                 JAR_PROXY=0
                 JAR_BUILDTOOL=1
                 JAR_TYPE="Spigot Buildtools"
+                JAR_VERSION="git${JAR_VERSION#*git}"
+                JAR_VERSION=`echo $JAR_VERSION | awk '{print $1}'`
                 JAR_VERSION_MC="From 1.8"
-                JAR_TAG="Sweet! You can build a spigot jar using '$PATH_SCRIPT jar build [jar] [version] $JAR_NAME!'"
+                JAR_TAG="Sweet! You can build a spigot jar using '$PATH_SCRIPT jar build [jar] $JAR_NAME [version]!'"
             elif [[ "$JAR_VERSION" =~ "version is not a recognized option" ]]; then
                 echo "Looks like it contains a vannila server"
                 JAR_PROXY=0
@@ -436,16 +456,31 @@ subfunc_jar_info() {
         return 0
     fi
 } ## Read and print jar configuration. Return: 0 success, 1 not exist
+subfunc_jar_config_write() {
+    if [[ -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" && ! -w "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
+        func_notification 3 "Can not write to configuration file '$JAR_NAME.conf' due to lacking of writing permission. Check your permission"
+        return 1
+    else
+        func_notification 1 "Proceeding to write values to config file....'$JAR_NAME.conf'"
+        echo "## Configuration for jar file '$JAR_NAME', DO NOT EDIT THIS UNLESS YOU KNOW WHAT YOU ARE DOING" > "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
+        echo "JAR_TAG=\"$JAR_TAG\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
+        echo "JAR_TYPE=\"$JAR_TYPE\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
+        echo "JAR_BUILDTOOL=\"$JAR_BUILDTOOL\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
+        echo "JAR_PROXY=\"$JAR_PROXY\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
+        echo "JAR_VERSION=\"$JAR_VERSION\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
+        echo "JAR_VERSION_MC=\"$JAR_VERSION_MC\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
+        func_notification 0 "Successfully written values to config file $JAR_NAME.conf"
+    fi
+}
 subfunc_jar_config_read() {
     if [[ ! -f $PATH_DIRECTORY/jar/$JAR_NAME.conf ]]; then
-        func_notification 3 "Configuration file $JAR_NAME.conf not found, all configuration for jar $JAR_NAME set to default, you may try $PATH_SCRIPT jar config $JAR_NAME to reconfigure it."
+        func_notification 3 "Configuration file '$JAR_NAME.conf' not found, all configuration for jar '$JAR_NAME' set to default, you may try '$PATH_SCRIPT jar config $JAR_NAME' to reconfigure it."
         JAR_TAG=''
         JAR_TYPE=''
         JAR_VERSION=''
         JAR_VERSION_MC=''
         JAR_PROXY=0
         JAR_BUILDTOOL=0
-        JAR_SIZE=0
         return 1
     fi
     local IFS="="
@@ -456,16 +491,31 @@ subfunc_jar_config_read() {
             ;;
             *)
                 if [[ ! -z "$VALUE" ]]; then
-                    func_notification 1 "Redundant variable $NAME found in jar info file $JAR_NAME.info, ignored"
+                    func_notification 1 "Redundant variable $NAME found in jar configuration file '$JAR_NAME.conf', ignored"
                 fi
             ;;
         esac
     done < $PATH_DIRECTORY/jar/$JAR_NAME.conf
     return 0
 } ## Safely read jar info, ignore redundant values
+###### account related
+subfunc_account_write() {
+    if [[ -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" && ! -w "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" ]]; then
+        func_notification 3 "Can not write to configuration file '$ACCOUNT_NAME.conf' due to lacking of writing permission. Check your permission"
+        return 1
+    else
+        func_notification 1 "Proceeding to write values to config file '$ACCOUNT_NAME.conf'...."
+        echo "## Configuration for account '$ACCOUNT_NAME', DO NOT EDIT THIS UNLESS YOU KNOW WHAT YOU ARE DOING" > "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
+        echo "ACCOUNT_HOST=\"$ACCOUNT_HOST\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
+        echo "ACCOUNT_PORT=\"$ACCOUNT_PORT\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
+        echo "ACCOUNT_USER=\"$ACCOUNT_USER\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
+        echo "ACCOUNT_KEY=\"$ACCOUNT_KEY\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
+        func_notification 0 "Successfully written values to config file '$ACCOUNT_NAME.conf'"
+    fi
+}
 subfunc_account_read() {
-    if [[ ! -f $PATH_DIRECTORY/account/$ACCOUNT_NAME.account ]]; then
-        func_notification 3 "Account file $ACCOUNT_NAME.account not found, use $PATH_SCRIPT account define $ACCOUNT_NAME to define it first."
+    if [[ ! -f $PATH_DIRECTORY/account/$ACCOUNT_NAME.conf ]]; then
+        func_notification 3 "Configuration file for Account '$ACCOUNT_NAME' not found, use '$PATH_SCRIPT account define $ACCOUNT_NAME' to define it first."
         return 1
     fi
     local IFS="="
@@ -475,23 +525,14 @@ subfunc_account_read() {
                 eval $NAME=$VALUE
             ;;
             *)
-                func_notification 1 "Redundant variable $NAME found in jar info file $JAR_NAME.info, ignored"
+                if [[ ! -z "$VALUE" ]]; then
+                    func_notification 1 "Redundant variable '$NAME' found in configuration file '$ACCOUNT_NAME.conf', ignored"
+                fi
             ;;
         esac
-    done < $PATH_DIRECTORY/account/$ACCOUNT_NAME.account
+    done < $PATH_DIRECTORY/account/$ACCOUNT_NAME.conf
     return 0
 } ## Safely read account config, ignore redundant values
-subfunc_jar_name_fix() {
-    while true; do
-        local TMP=`echo "${JAR_NAME: -4}" | tr [A-Z] [a-z]`
-        if [[ "$TMP" = ".jar" ]]; then
-            echo "You jar name has redundant .jar suffix and has been automatically cut"
-            JAR_NAME="${JAR_NAME:0:-4}"
-        else
-            return 0
-        fi
-    done
-} ## Fix jar name, cut out .jar extension
 func_ssh_validity() {
     printf "Testing keyfile..."
     if [[ ! -f "$ACCOUNT_KEY" ]]; then
@@ -515,72 +556,9 @@ func_ssh_validity() {
         return 0
     fi
 }
-func_account_config() {
-    local ACCOUNT_VALID=0
-    while true; do
-        clear
-        func_draw_line
-        func_print_center "Account Configuration"
-        func_draw_line
-        echo -e "\e[1mNAME:\e[0m $ACCOUNT_NAME"
-        echo -e "\e[1mHOST:\e[0m $ACCOUNT_HOST \e[100mYou must specify a hostname/ip, even your servers are running on the same host as M7CM\e[0m" 
-        echo -e "\e[1mPORT:\e[0m $ACCOUNT_PORT \e[100mPort of SSH\e[0m"
-        echo -e "\e[1mUSER:\e[0m $ACCOUNT_USER \e[100mUse this account to connect the remote host\e[0m"
-        echo -e "\e[1mKEY:\e[0m $ACCOUNT_KEY \e[100mPrivate key to SSH, absolute path\e[0m"
-        printf "\n\e[1mVALIDITY:\e[0m "
-        [[ $ACCOUNT_VALID = 0 ]] && echo -e "\e[41mINVALID\e[0m"
-        [[ $ACCOUNT_VALID = 1 ]] && echo -e "\e[42mVALID\e[0m"
-        func_draw_line
-        echo -e "\e[4mType in the option you want to change and the new value split by =, i.e.PORT=2222, or KEY=/home/mcManager/keys/server1.key\nYou can also type 'validate' to let M7CM identify it, or 'confirm' to confirm these values\e[0m"
-        read -p ">>>" COMMAND
-        case "$COMMAND" in
-            validate)
-                func_ssh_validity
-                [[ $? = 0 ]] && ACCOUNT_VALID=1
-                read -n 1 -s -r -p "Press any key to continue..."
-            ;;
-            confirm)
-                if [[ $ACCOUNT_VALID = 0 ]]; then
-                    echo -e "\e[31mWARNING\e[0m: \e[5m\e[1mYou must validate this account first \e[0m\c"
-                    read -n 1 -s -r -p "Press any key to continue..."
-                else
-                    echo "Proceeding to write values to config file...."
-                    echo "## Configuration for account $ACCOUNT_NAME, DO NOT EDIT THIS UNLESS YOU KNOW WHAT YOU ARE DOING" > "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
-                    echo "ACCOUNT_HOST=\"$ACCOUNT_HOST\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
-                    echo "ACCOUNT_PORT=\"$ACCOUNT_PORT\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
-                    echo "ACCOUNT_USER=\"$ACCOUNT_USER\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
-                    echo "ACCOUNT_KEY=\"$ACCOUNT_KEY\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
-                    return 0
-                fi
-            ;;
-            *)
-                local OPTION=''
-                local VALUE=''
-                IFS='=' read -r OPTION VALUE <<< "$COMMAND"
-                ACCOUNT_VALID=0
-                case "$OPTION" in
-                    HOST|PORT|USER|KEY)
-                        eval ACCOUNT_$OPTION="$VALUE"
-                    ;;
-                    NAME)
-                        "$VALUE"
-                        if [[ -f "$PATH_DIRECTORY/account/$VALUE.account" ]]; then
-                            echo "\e[31mWARNING\e[0m: \e[1mA An account with the same name has already exist, renaming aborted. \e[0m\c"
-                            read -n 1 -s -r -p "Press any key to continue..."
-                        elif [[ -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account" ]]; then
-                            mv "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account" "$PATH_DIRECTORY/account/$VALUE.account"
-                            ACCOUNT_NAME=$VALUE
-                        fi
-                    ;;
-                    *)
-                        echo -e "\e[31mWARNING\e[0m: \e[5m\e[1mInput not recognized! \e[0m\c"
-                        read -n 1 -s -r -p "Press any key to continue..."
-                    ;;
-                esac
-            ;;
-        esac
-    done
-}
+
+#### action functions, processing users' demand
+## jar related
 action_jar_import() {
     if [[ $# -lt 2 ]]; then
         func_notification 3 "Too few arguments!"
@@ -632,8 +610,9 @@ action_jar_import() {
         fi
     fi
     func_yn Y "Importing success! Do you want to auto-identify and configure it now?"
+    subfunc_jar_config_write
     if [[ $? = 0 ]]; then
-        action_jar_config $JAR_NAME "TAG=$JAR_TAG"
+        action_jar_config $JAR_NAME "TAG = $JAR_TAG"
     else
         func_notification 1 "Aborted configuring jar '$JAR_NAME', you may want to use '$PATH_SCRIPT jar config $JAR_NAME' to configure it later"
     fi
@@ -664,7 +643,7 @@ action_jar_config() {
             func_notification 3 "Configuration file of jar '$JAR_NAME' is not writable now, thus we can not configure it."
             return 2 # existing configuration not writable
         elif [[ ! -r "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
-            func_notification 2 "We can not read existing configuration file for jar '$JAR_NAME', did you edited it as other users?"
+            func_notification 2 "We can not read existing configuration file for jar '$JAR_NAME', did you edited it as other users? All options set to default"
             ## still proceed
         else
             subfunc_jar_config_read
@@ -673,14 +652,14 @@ action_jar_config() {
     if [[ ! -z "$2" ]]; then
         func_jar_config "${@:2}"
     fi
-    if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" && -z "$NO_IDENTIFY" ]]; then
+    if [[ ! -f "$PATH_DIRECTORY/jar/$JAR_NAME.conf" ]]; then
         func_notification 1 "Looks like this jar is just added to our library or its configuration file has been lost, proceeding to auto-identify it"
         subfunc_jar_identify 
         func_notification 0 "Refreshing in 1 second..."
         sleep 1
     fi
     ## Get jar size
-    local JAR_SIZE=`wc -c $PATH_DIRECTORY/jar/$JAR_NAME.jar |awk '{print $1}'`
+    JAR_SIZE=`wc -c $PATH_DIRECTORY/jar/$JAR_NAME.jar |awk '{print $1}'`
     ## Interactive-menu
     while true; do
         clear
@@ -696,7 +675,7 @@ action_jar_config() {
         func_multilayer_expand_menu "VERSION: $JAR_VERSION" "The version of the jar itself"
         func_multilayer_expand_menu "VERSION_MC: $JAR_VERSION_MC" "The version of Minecraft this jar can host" 1 1
         func_draw_line
-        echo "Type in the option you want to change and its new value split by =, without quote. i.e. 'TAG=This is my first jar!' You can also type 'identify' to let M7CM identify it, or 'confirm' to confirm thost values:"
+        echo "Type in the option you want to change and its new value split by =, i.e. 'TAG = This is my first jar!' (without quote and option is not case sensitive). You can also type 'identify' to let M7CM auto-identify it, or 'confirm' or 'save' to save thost values:"
         read -p ">>>" COMMAND
         case "$COMMAND" in
             identify)
@@ -707,24 +686,12 @@ action_jar_config() {
                 func_notification 0 "Refreshing in 1 second..."
                 sleep 1
             ;;
-            confirm)
-                func_notification 1 "Proceeding to write values to config file...."
-                echo "## Configuration for jar file '$JAR_NAME', DO NOT EDIT THIS UNLESS YOU KNOW WHAT YOU ARE DOING" > "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
-                echo "JAR_TAG=\"$JAR_TAG\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
-                echo "JAR_TYPE=\"$JAR_TYPE\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
-                echo "JAR_BUILDTOOL=\"$JAR_BUILDTOOL\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
-                echo "JAR_PROXY=\"$JAR_PROXY\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
-                echo "JAR_VERSION=\"$JAR_VERSION\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
-                echo "JAR_VERSION_MC=\"$JAR_VERSION_MC\"" >> "$PATH_DIRECTORY/jar/$JAR_NAME.conf"
-                func_notification 0 "Successfully written values to config file $JAR_NAME.conf"
+            confirm|save)
+                subfunc_jar_config_write
                 return 0 # success
             ;;
             *)
                 func_jar_config "$COMMAND"
-                # func_notification 0 "Refreshing in 3 second."
-                # sleep 1
-                # func_notification 0 "Refreshing in 2 second.."
-                # sleep 1
                 func_notification 0 "Refreshing in 1 second..."
                 sleep 1
             ;;
@@ -859,7 +826,7 @@ action_jar_build() {
         local VERSION3
         local IFS='.'
         read -r VERSION2 VERSION3 <<< "${3:2}"
-        local IFS
+        local IFS=$' \t\n'
         if [[ "$VERSION2" -ge 8 && "$VERSION3" -le 8 ]]; then
             local VERSION="$3"
         else
@@ -902,10 +869,10 @@ action_jar_build() {
         func_notification 1 "Got out from temporary folder '$TMP'"
         rm -rf "$TMP"
         func_notification 1 "Successfully built Spigot jar '$JAR_NAME' rev '$VERSION' using Buildtools jar '$BUILDTOOL'! It's already added in your jar library."
+        subfunc_jar_config_write
         func_yn Y "Would you like to configure it now?"
         if [[ $? = 0 ]]; then
-            local NO_IDENTIFY=1
-            action_jar_config $JAR_NAME "TAG=Built at `date +"%Y-%m-%d-%k:%M"` using M7CM" "TYPE=Spigot" "PROXY=0" "VERSION=Spigot-$VERSION" "VERSION_MC=$VERSION" "BUILDTOOL=0"
+            action_jar_config "$JAR_NAME" "TAG=Built at `date +"%Y-%m-%d-%k:%M"` using M7CM" "TYPE=Spigot" "PROXY=0" "VERSION=Spigot-$VERSION" "VERSION_MC=$VERSION" "BUILDTOOL=0"
         else
             func_notification 2 "You have aborted configuring jar '$JAR_NAME', this may result in unexpected consequences. It'd be better to configure it now using '$PATH_SCRIPT jar config $JAR_NAME' "
         fi
@@ -913,27 +880,196 @@ action_jar_build() {
     fi
 } ## Usage: action_jar_build [jar name] [buildtool] [version]
     ## Return: 0 success 1 environment error-jre 2 environment error-git, 3 buildtool not exist, 4 not a buildtool, 5 can not overwrite existing jar, 6 user aborted overwriting, 7 user aborted because of suspicious version, 8 build error,9 build failed
-
-
+## account related
 action_account_define() {
-    local ACCOUNT_NAME="$1"
-    local ACCOUNT_HOST="$2"
-    local ACCOUNT_PORT="$3"
-    [[ -z "$3" ]] && ACCOUNT_PORT="22"
-    local ACCOUNT_USER="$4"
-    [[ -z "$4" ]] && ACCOUNT_USER="$USER"
-    local ACCOUNT_KEY="$5"
-    func_account_config "$ACCOUNT_NAME"
-}
-action_account_config() {
+    if [[ -f "$PATH_DIRECTORY/account/$1.conf" ]]; then
+        if [[ ! -w "$PATH_DIRECTORY/account/$1.conf" ]]; then
+            func_notification 3 "There's already an account with the same name '$1', and can not be overwritten due to lacking of writing permission. Check your permission"
+            return 1 # can not overwrite existing account
+        else
+            func_yn N "You've already defined an account with the same name '$1', are you sure you want to overwrite it?"
+            if [[ $? = 0 ]]
+                func_notification 1 "Proceeding to overwrite account '$1'..."
+            else
+                return 2 # aborted overwriting
+            fi
+        fi
+    fi
     local ACCOUNT_NAME="$1"
     local ACCOUNT_HOST=''
     local ACCOUNT_PORT=''
     local ACCOUNT_USER=''
     local ACCOUNT_KEY=''
+    func_account_config "HOST = $2" "PORT = $3" "USER = $4" "KEY = $5"
+    if [[ $? != 0 ]]; then
+        return 3 #illegal values and can not be fixed
+    else
+        func_notification 0 "Proceeding to configuration page of account '$ACCOUNT_NAME' in 1 second..."
+        action_account_config "$1"
+        sleep 1
+    fi
+    touch 
+    func_account_config "$ACCOUNT_NAME" 
+} ## Usage: action_account_define [account name] [host] [port] [user] [key]
+    ## Return: 0 success, 1 can not overwrite existing account, 2 aborted overwriting
+action_account_config() {
+    local ACCOUNT_NAME="$1"
+    [[ -z ""]]
     [[ ! -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account" ]] && echo -e "\e[31mWARNING\e[0m: The account $ACCOUNT_NAME does not exist" && return 1 #invalid jar
     subfunc_account_safely_read "$ACCOUNT_NAME"
     func_account_config "$ACCOUNT_NAME"
+}
+func_account_config() {
+    local CHANGE
+    local OPTION
+    local VALUE
+    local IFS
+    while [[ $# > 0 ]]; do
+        local CHANGE="$1"
+        local IFS=' ='
+        read -r OPTION VALUE <<< "$CHANGE"
+        OPTION=`echo "$OPTION" | tr [a-z] [A-Z]`
+        local IFS=$' \t\n'
+        case "$OPTION" in
+            HOST)
+                if [[ -z "$VALUE" ]]; then
+                    ACCOUNT_HOST="localhost"
+                    func_notification 2 "No host specified, using default value 'localhost'"
+                else
+                    ACCOUNT_HOST="$VALUE"
+                    func_notification 0 "'HOST' set to '$VALUE'"
+                fi
+            ;;
+            USER)
+                if [[ -z "$VALUE" ]]; then
+                    ACCOUNT_USER="$USER"
+                    func_notification 2 "No user specified, using current user '$USER'"
+                else
+                    ACCOUNT_HOST="$VALUE"
+                    func_notification 0 "'USER' set to '$VALUE'"
+                fi
+            ;;
+            PORT)
+                if [[ "$VALUE" =~ $REGEX ]] && [[ "$VALUE" -ge 0 && "$VALUE" -le 65535 ]]; then
+                    ACCOUNT_PORT="$VALUE"
+                    func_notification 0 "'PORT' set to '$VALUE'"
+                elif [[ -z "$VALUE" ]]; then
+                    func_notification 2 "No port specified, using default value '22' as [port]"
+                    ACCOUNT_PORT="22"
+                else
+                    func_notification 2 "'$VALUE' is not a valid port, using default value '22' as [port]"
+                    ACCOUNT_PORT="22"
+                fi
+            ;;
+            KEY)
+                if [[ ! -f "$VALUE" ]]; then
+                    func_notification 3 "Keyfile '$VALUE' not exist"
+                    return 1 # key not readable
+                elif [[ ! -r "$VALUE" ]]; then
+                    func_notification 3 "Keyfile '$VALUE' not readable, check your permission"
+                    return 2 # not readable
+                else
+                    ACCOUNT_KEY="$VALUE"
+                    func_notification 0 "'KEY' set to '$VALUE'"
+                fi
+            ;;
+            NAME)
+                if [[ -z "$ACCOUNT_NAME" ]]; then
+                    func_notification 2 "Renaming aborted due to no account being selected"
+                elif [[ -f "$PATH_DIRECTORY/account/$VALUE.conf" ]]; then
+                    if [[ ! -w "$PATH_DIRECTORY/account/$VALUE.conf" ]]; then
+                        func_notification 2 "Renaming aborted. An account with the same name '$VALUE' has already exist and can't be overwriten due to lack of writing permission. Check your permission."
+                    else
+                        func_yn N "An account with the same name '$VALUE' has already exist, are you sure you want to overwrite it?"
+                        if [[ $? = 0 ]]; then
+                            mv -f "$PATH_DIRECTORY/account/$VALUE.conf" "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf"
+                            ACCOUNT_NAME="$VALUE"
+                            func_notification 0 "'NAME' set to '$VALUE'"
+                        else
+                            return 3 # abort overwriting
+                        fi
+                    fi  
+                else
+                    mv "$PATH_DIRECTORY/account/$ACCOUNT_NAME.conf" "$PATH_DIRECTORY/account/$VALUE.conf" 
+                    JAR_NAME="$VALUE"
+                    ACCOUNT_NAME="$VALUE"
+                    func_notification 0 "'NAME' set to '$VALUE'"
+                fi
+            ;;
+            *)
+                func_notification 1 "'$OPTION' is not an available option, ignored"
+            ;;
+        esac
+        shift
+    done
+    return 0
+} ##
+    ## Return: 0 success, 1 key not readable
+action_account_config() {
+    local ACCOUNT_VALID=0
+    while true; do
+        clear
+        func_draw_line
+        func_print_center "Account Configuration"
+        func_draw_line
+        echo -e "\e[1mNAME:\e[0m $ACCOUNT_NAME"
+        echo -e "\e[1mHOST:\e[0m $ACCOUNT_HOST \e[100mYou must specify a hostname/ip, even your servers are running on the same host as M7CM\e[0m" 
+        echo -e "\e[1mPORT:\e[0m $ACCOUNT_PORT \e[100mPort of SSH\e[0m"
+        echo -e "\e[1mUSER:\e[0m $ACCOUNT_USER \e[100mUse this account to connect the remote host\e[0m"
+        echo -e "\e[1mKEY:\e[0m $ACCOUNT_KEY \e[100mPrivate key to SSH, absolute path\e[0m"
+        printf "\n\e[1mVALIDITY:\e[0m "
+        [[ $ACCOUNT_VALID = 0 ]] && echo -e "\e[41mINVALID\e[0m"
+        [[ $ACCOUNT_VALID = 1 ]] && echo -e "\e[42mVALID\e[0m"
+        func_draw_line
+        echo -e "\e[4mType in the option you want to change and the new value split by =, i.e.PORT=2222, or KEY=/home/mcManager/keys/server1.key\nYou can also type 'validate' to let M7CM identify it, or 'confirm' to confirm these values\e[0m"
+        read -p ">>>" COMMAND
+        case "$COMMAND" in
+            validate)
+                func_ssh_validity
+                [[ $? = 0 ]] && ACCOUNT_VALID=1
+                read -n 1 -s -r -p "Press any key to continue..."
+            ;;
+            confirm)
+                if [[ $ACCOUNT_VALID = 0 ]]; then
+                    echo -e "\e[31mWARNING\e[0m: \e[5m\e[1mYou must validate this account first \e[0m\c"
+                    read -n 1 -s -r -p "Press any key to continue..."
+                else
+                    echo "Proceeding to write values to config file...."
+                    echo "## Configuration for account $ACCOUNT_NAME, DO NOT EDIT THIS UNLESS YOU KNOW WHAT YOU ARE DOING" > "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
+                    echo "ACCOUNT_HOST=\"$ACCOUNT_HOST\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
+                    echo "ACCOUNT_PORT=\"$ACCOUNT_PORT\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
+                    echo "ACCOUNT_USER=\"$ACCOUNT_USER\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
+                    echo "ACCOUNT_KEY=\"$ACCOUNT_KEY\"" >> "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account"
+                    return 0
+                fi
+            ;;
+            *)
+                local OPTION=''
+                local VALUE=''
+                IFS='=' read -r OPTION VALUE <<< "$COMMAND"
+                ACCOUNT_VALID=0
+                case "$OPTION" in
+                    HOST|PORT|USER|KEY)
+                        eval ACCOUNT_$OPTION="$VALUE"
+                    ;;
+                    NAME)
+                        "$VALUE"
+                        if [[ -f "$PATH_DIRECTORY/account/$VALUE.account" ]]; then
+                            echo "\e[31mWARNING\e[0m: \e[1mA An account with the same name has already exist, renaming aborted. \e[0m\c"
+                            read -n 1 -s -r -p "Press any key to continue..."
+                        elif [[ -f "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account" ]]; then
+                            mv "$PATH_DIRECTORY/account/$ACCOUNT_NAME.account" "$PATH_DIRECTORY/account/$VALUE.account"
+                            ACCOUNT_NAME=$VALUE
+                        fi
+                    ;;
+                    *)
+                        echo -e "\e[31mWARNING\e[0m: \e[5m\e[1mInput not recognized! \e[0m\c"
+                        read -n 1 -s -r -p "Press any key to continue..."
+                    ;;
+                esac
+            ;;
+        esac
+    done
 }
 # action_account_remove() {
     
